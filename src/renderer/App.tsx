@@ -246,10 +246,21 @@ export function App() {
   const platformDetail = !bootstrap
     ? ''
     : platformSupported
-      ? interpolate(t.platformSupportedDetail, { build: bootstrap.platformCompatibility.build_number ?? '—' })
+      ? bootstrap.platformCompatibility.platform === 'darwin'
+        ? t.platformMacSupportedDetail
+        : interpolate(t.platformSupportedDetail, { build: bootstrap.platformCompatibility.build_number ?? '—' })
       : bootstrap.platformCompatibility.reason === 'probe_failed'
         ? t.platformProbeFailedDetail
-        : t.platformUnsupportedDetail;
+        : bootstrap.platformCompatibility.platform === 'darwin'
+          ? t.platformMacUnsupportedDetail
+          : t.platformUnsupportedDetail;
+  const accelerationLabel = bootstrap?.components.analysis.acceleration === 'cuda'
+    ? t.gpu
+    : bootstrap?.components.analysis.acceleration === 'mps'
+      ? t.appleGpu
+      : bootstrap?.components.analysis.acceleration === 'cpu'
+        ? t.cpu
+        : t.unavailable;
 
   useEffect(() => {
     void window.ttcut.bootstrap().then((data) => {
@@ -535,7 +546,7 @@ export function App() {
                 <h2>{t.components}</h2>
                 <div className="component-row"><div><strong>{t.analysisComponent}</strong><span>{bootstrap?.components.analysis.version ?? t.unavailable}</span>{bootstrap?.components.analysis.path && <span>{t.componentPath}: {bootstrap.components.analysis.path}</span>}</div><span className={`status ${bootstrap?.components.analysis.available ? 'ok' : ''}`}>{bootstrap?.components.analysis.available ? t.available : t.unavailable}</span></div>
                 <div className="component-row"><div><strong>{t.mediaComponent}</strong><span>{bootstrap?.components.media.version ?? t.unavailable}</span>{bootstrap?.components.media.path && <span>{t.componentPath}: {bootstrap.components.media.path}</span>}</div><span className={`status ${bootstrap?.components.media.available ? 'ok' : ''}`}>{bootstrap?.components.media.available ? t.available : t.unavailable}</span></div>
-                <div className="component-row"><div><strong>{t.acceleration}</strong><span>{bootstrap?.components.analysis.acceleration === 'cuda' ? t.gpu : bootstrap?.components.analysis.acceleration === 'cpu' ? t.cpu : t.unavailable}</span></div></div>
+                <div className="component-row"><div><strong>{t.acceleration}</strong><span>{accelerationLabel}</span></div></div>
               </article>
               <article className="card setup-card">
                 <div className="setup-heading"><div><h2>{t.setupTitle}</h2><p>{t.setupDetail}</p></div><button className="secondary" disabled={Boolean(setupTask)} onClick={() => void refreshComponents()}>{t.refreshComponents}</button></div>
@@ -553,6 +564,9 @@ export function App() {
                     )}
                     {bootstrap?.componentSetup.media_offer && !bootstrap.components.media.available && (
                       <div className="setup-option"><div><strong>{t.mediaOffer}</strong><span>{t.mediaOfferDetail}</span><small>{interpolate(t.downloadSize, { size: fileSize(bootstrap.componentSetup.media_offer.download_size_bytes) })}</small></div><div><button className="text-button" onClick={() => void window.ttcut.openExternalUrl(bootstrap.componentSetup.media_offer!.license_url)}>{t.viewLicense}</button><button className="primary" disabled={!platformSupported || !bootstrap.componentSetup.media_offer.available_for_download} onClick={() => void installMediaComponent()}>{t.consentInstall}</button></div></div>
+                    )}
+                    {!bootstrap?.componentSetup.analysis_offer && !bootstrap?.componentSetup.media_offer && (
+                      <div className="setup-option"><div><strong>{t.components}</strong><span>{t.developmentComponentsHint}</span></div></div>
                     )}
                   </div>
                 )}
