@@ -7,18 +7,19 @@ import { loadComponentCatalog } from './component-catalog';
 import { runProcess } from './processes';
 import { executableName, homebrewMediaCandidates, mediaExecutableNames } from './platform-paths';
 import {
+  ANALYSIS_RUNTIME_PROBE,
+  parseRuntimeInfo,
+  validateRuntimeInfo,
+  type AnalysisAcceleration,
+  type AnalysisRuntimeValidation,
+} from './analysis-runtime';
+import {
   ACTIVE_RUNTIME_MANIFEST,
-  ANALYSIS_PYTHON_VERSION,
   ANALYSIS_RUNTIME_ID,
-  ANALYSIS_TORCH_VERSION,
   analysisRuntimeDirectory,
   analysisRuntimePython,
-  expectedTorchVersion,
   type AnalysisRuntimeVariant,
 } from './runtime-layout';
-
-const ANALYSIS_NUMPY_VERSION = '2.5.1';
-const ANALYSIS_OPENCV_VERSION = '4.13.0';
 
 async function exists(value: string): Promise<boolean> {
   try {
@@ -152,7 +153,7 @@ export async function validateAnalysisComponent(
   python: string,
   weights: string,
   expectedVariant?: AnalysisRuntimeVariant,
-): Promise<{ version: string; pythonVersion: string; torchVersion: string; acceleration: 'cuda' | 'cpu'; variant: AnalysisRuntimeVariant }> {
+): Promise<AnalysisRuntimeValidation> {
   const catalog = await loadComponentCatalog();
   if (await sha256File(weights) !== catalog.tracknet_weight.sha256) throw new Error('TRACKNET_WEIGHT_HASH_MISMATCH');
   return validateAnalysisRuntime(python, expectedVariant);
@@ -161,32 +162,9 @@ export async function validateAnalysisComponent(
 export async function validateAnalysisRuntime(
   python: string,
   expectedVariant?: AnalysisRuntimeVariant,
-): Promise<{ version: string; pythonVersion: string; torchVersion: string; acceleration: 'cuda' | 'cpu'; variant: AnalysisRuntimeVariant }> {
-  const result = await runProcess(python, [
-    '-c',
-    'import cv2,json,numpy,sys,torch;print(json.dumps({"python":sys.version.split()[0],"torch":torch.__version__,"torch_cuda":torch.version.cuda,"opencv":cv2.__version__,"numpy":numpy.__version__,"acceleration":"cuda" if torch.cuda.is_available() else "cpu"}))',
-  ], { timeoutMs: 30_000 });
-  const value = JSON.parse(result.stdout.trim()) as Record<string, unknown>;
-  const acceptedTorchVersions = new Set<string>([
-    expectedTorchVersion('cpu'),
-    expectedTorchVersion('cu126'),
-  ]);
-  if (value.python !== ANALYSIS_PYTHON_VERSION || typeof value.torch !== 'string' || !acceptedTorchVersions.has(value.torch)) {
-    throw new Error('ANALYSIS_RUNTIME_VERSION_MISMATCH');
-  }
-  if (value.numpy !== ANALYSIS_NUMPY_VERSION || value.opencv !== ANALYSIS_OPENCV_VERSION) throw new Error('ANALYSIS_RUNTIME_VERSION_MISMATCH');
-  if (value.acceleration !== 'cuda' && value.acceleration !== 'cpu') throw new Error('ANALYSIS_RUNTIME_SELF_TEST_FAILED');
-  const inferredVariant: AnalysisRuntimeVariant = value.torch === expectedTorchVersion('cu126') ? 'cu126' : 'cpu';
-  if (expectedVariant && value.torch !== expectedTorchVersion(expectedVariant)) throw new Error('ANALYSIS_RUNTIME_VARIANT_MISMATCH');
-  if (expectedVariant === 'cpu' && (value.torch_cuda !== null || value.acceleration !== 'cpu')) throw new Error('ANALYSIS_RUNTIME_VARIANT_MISMATCH');
-  if (expectedVariant === 'cu126' && (value.torch_cuda !== '12.6' || value.acceleration !== 'cuda')) throw new Error('CUDA_RUNTIME_SELF_TEST_FAILED');
-  return {
-    version: `Python ${value.python} / PyTorch ${value.torch}`,
-    pythonVersion: String(value.python),
-    torchVersion: value.torch,
-    acceleration: value.acceleration,
-    variant: expectedVariant ?? inferredVariant,
-  };
+): Promise<AnalysisRuntimeValidation> {
+  const result = await runProcess(python, ['-c', ANALYSIS_RUNTIME_PROBE], { timeoutMs: 30_000 });
+  return validateRuntimeInfo(parseRuntimeInfo(result.stdout), expectedVariant);
 }
 
 export async function resolveUsableAnalysisComponents(device: 'auto' | 'cuda' | 'cpu'): Promise<ComponentPaths> {
@@ -240,7 +218,7 @@ export async function validateMediaComponent(ffmpeg: string, ffprobe: string): P
 
 export async function inspectComponentPaths(paths: ComponentPaths): Promise<ComponentStatus> {
   let analysisVersion: string | null = null;
-  let acceleration: 'cuda' | 'cpu' | 'unavailable' = 'unavailable';
+  let acceleration: AnalysisAcceleration | 'unavailable' = 'unavailable';
   let analysisDetail: string | null = null;
   if (paths.python && paths.weights) {
     try {

@@ -159,7 +159,7 @@ export const componentStatusSchema = z.object({
     available: z.boolean(),
     version: z.string().nullable(),
     path: z.string().nullable(),
-    acceleration: z.enum(['cuda', 'cpu', 'unavailable']),
+    acceleration: z.enum(['cuda', 'mps', 'cpu', 'unavailable']),
     detail: z.string().nullable(),
   }).strict(),
   media: z.object({
