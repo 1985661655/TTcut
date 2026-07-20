@@ -10,7 +10,7 @@ export function squirrelEventPlan(platform: NodeJS.Platform, event: string | und
   if (event !== '--squirrel-install' && event !== '--squirrel-updated' && event !== '--squirrel-uninstall') return null;
   return {
     kind: 'shortcut',
-    updateExecutable: path.resolve(path.dirname(executable), '..', 'Update.exe'),
-    args: [event === '--squirrel-uninstall' ? '--removeShortcut' : '--createShortcut', path.basename(executable)],
+    updateExecutable: path.win32.resolve(path.win32.dirname(executable), '..', 'Update.exe'),
+    args: [event === '--squirrel-uninstall' ? '--removeShortcut' : '--createShortcut', path.win32.basename(executable)],
   };
 }
