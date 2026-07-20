@@ -5,11 +5,13 @@ import type { ComponentStatus } from '../shared/contracts';
 import { sha256File } from './component-assets';
 import { loadComponentCatalog } from './component-catalog';
 import { runProcess } from './processes';
+import { executableName, homebrewMediaCandidates, mediaExecutableNames } from './platform-paths';
 import {
   ACTIVE_RUNTIME_MANIFEST,
   ANALYSIS_PYTHON_VERSION,
   ANALYSIS_RUNTIME_ID,
   ANALYSIS_TORCH_VERSION,
+  analysisRuntimeDirectory,
   analysisRuntimePython,
   expectedTorchVersion,
   type AnalysisRuntimeVariant,
@@ -62,16 +64,22 @@ function requestedVariants(device: 'auto' | 'cuda' | 'cpu'): AnalysisRuntimeVari
 
 async function runtimeCandidates(device: 'auto' | 'cuda' | 'cpu'): Promise<RuntimeCandidate[]> {
   const managedRoot = managedComponentsRoot();
+  const pythonExecutable = executableName('python');
   const allowDevelopmentFallbacks = !app.isPackaged && !(
     process.env.TTCUT_E2E === '1' && process.env.TTCUT_E2E_DISABLE_DEV_COMPONENTS === '1'
   );
   const candidates: RuntimeCandidate[] = [];
   if (process.env.TTCUT_PYTHON) candidates.push({ python: process.env.TTCUT_PYTHON, variant: 'external' });
   for (const variant of requestedVariants(device)) {
-    candidates.push({ python: path.join(managedRoot, ...analysisRuntimePython(variant).split('/')), variant });
+    candidates.push({
+      python: process.platform === 'win32'
+        ? path.join(managedRoot, ...analysisRuntimePython(variant).split('/'))
+        : path.join(managedRoot, ...analysisRuntimeDirectory(variant).split('/'), pythonExecutable),
+      variant,
+    });
   }
   if (allowDevelopmentFallbacks) {
-    candidates.push({ python: path.join(managedRoot, 'python-3.12.13', 'python.exe'), variant: 'legacy' });
+    candidates.push({ python: path.join(managedRoot, 'python-3.12.13', pythonExecutable), variant: 'legacy' });
   }
   const seen = new Set<string>();
   const available: RuntimeCandidate[] = [];
@@ -100,16 +108,20 @@ async function resolveWeights(): Promise<string | null> {
 export async function resolveComponents(device: 'auto' | 'cuda' | 'cpu' = 'auto'): Promise<ComponentPaths> {
   const managedRoot = managedComponentsRoot();
   const runtimes = await runtimeCandidates(device);
+  const mediaNames = mediaExecutableNames();
+  const homebrew = homebrewMediaCandidates();
   const media = await Promise.all([
     firstExisting([
       process.env.TTCUT_FFMPEG,
-      path.join(managedRoot, 'ffmpeg-8.1', 'bin', 'ffmpeg.exe'),
-      resource('resources', 'ffmpeg', 'ffmpeg.exe'),
+      path.join(managedRoot, 'ffmpeg-8.1', 'bin', mediaNames.ffmpeg),
+      resource('resources', 'ffmpeg', mediaNames.ffmpeg),
+      ...homebrew.ffmpeg,
     ].filter((item): item is string => Boolean(item))),
     firstExisting([
       process.env.TTCUT_FFPROBE,
-      path.join(managedRoot, 'ffmpeg-8.1', 'bin', 'ffprobe.exe'),
-      resource('resources', 'ffmpeg', 'ffprobe.exe'),
+      path.join(managedRoot, 'ffmpeg-8.1', 'bin', mediaNames.ffprobe),
+      resource('resources', 'ffmpeg', mediaNames.ffprobe),
+      ...homebrew.ffprobe,
     ].filter((item): item is string => Boolean(item))),
   ]);
   return {

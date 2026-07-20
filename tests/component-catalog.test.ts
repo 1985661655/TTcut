@@ -32,8 +32,14 @@ describe('production component catalog', () => {
     expect(catalog.tracknet_weight.url).toContain('/tracknet-weight-1.0.0/TrackNet_best.pt');
 
     const setup = await componentSetupInfo();
-    expect(setup.analysis_offer?.available_for_download).toBe(process.platform === 'win32');
-    expect(setup.analysis_offer?.download_size_bytes).toBe(3_172_507_599);
+    if (process.platform === 'win32') {
+      expect(setup.analysis_offer?.available_for_download).toBe(true);
+      expect(setup.analysis_offer?.download_size_bytes).toBe(3_172_507_599);
+      expect(setup.media_offer?.available_for_download).toBe(true);
+    } else {
+      expect(setup.analysis_offer).toBeNull();
+      expect(setup.media_offer).toBeNull();
+    }
     expect(setup).not.toHaveProperty('offline_import_available');
   });
 });

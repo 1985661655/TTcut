@@ -108,6 +108,9 @@ export function loadComponentCatalog(): Promise<ComponentCatalog> {
 
 export async function componentSetupInfo(): Promise<ComponentSetupInfo> {
   const catalog = await loadComponentCatalog();
+  if (process.platform !== 'win32') {
+    return { analysis_offer: null, media_offer: null };
+  }
   return {
     analysis_offer: catalog.analysis_runtime.assets.length === ANALYSIS_RUNTIME_VARIANTS.length ? {
       id: 'analysis',
