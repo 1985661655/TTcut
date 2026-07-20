@@ -196,7 +196,7 @@ export const platformCompatibilitySchema = z.object({
   platform: z.string().min(1),
   architecture: z.string().min(1),
   build_number: z.number().int().positive().nullable(),
-  installation_type: z.enum(['Client', 'Server', 'Unknown']),
+  installation_type: z.enum(['Client', 'Server', 'macOS', 'Unknown']),
 }).strict();
 
 export type Calibration = z.infer<typeof calibrationSchema>;

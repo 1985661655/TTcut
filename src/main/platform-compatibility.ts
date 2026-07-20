@@ -9,7 +9,7 @@ export type PlatformProbe = {
   platform: string;
   architecture: string;
   buildNumber: number | null;
-  installationType: 'Client' | 'Server' | 'Unknown';
+  installationType: 'Client' | 'Server' | 'macOS' | 'Unknown';
   probeFailed?: boolean;
 };
 
@@ -24,7 +24,23 @@ function unsupported(probe: PlatformProbe, reason: Exclude<PlatformCompatibility
   };
 }
 
+function supported(probe: PlatformProbe): PlatformCompatibility {
+  return {
+    status: 'supported',
+    reason: 'supported',
+    platform: probe.platform,
+    architecture: probe.architecture,
+    build_number: probe.buildNumber,
+    installation_type: probe.installationType,
+  };
+}
+
 export function evaluatePlatformCompatibility(probe: PlatformProbe): PlatformCompatibility {
+  if (probe.platform === 'darwin') {
+    if (probe.architecture !== 'arm64') return unsupported(probe, 'unsupported_architecture');
+    return supported({ ...probe, buildNumber: null, installationType: 'macOS' });
+  }
+
   if (probe.platform !== 'win32') return unsupported(probe, 'unsupported_platform');
   if (probe.architecture !== 'x64') return unsupported(probe, 'unsupported_architecture');
   if (probe.probeFailed || probe.buildNumber === null || probe.installationType === 'Unknown') {
@@ -34,14 +50,7 @@ export function evaluatePlatformCompatibility(probe: PlatformProbe): PlatformCom
   if (probe.buildNumber !== 19045 && probe.buildNumber < 22000) {
     return unsupported(probe, 'unsupported_windows_build');
   }
-  return {
-    status: 'supported',
-    reason: 'supported',
-    platform: probe.platform,
-    architecture: probe.architecture,
-    build_number: probe.buildNumber,
-    installation_type: probe.installationType,
-  };
+  return supported(probe);
 }
 
 function parseRegistryValue(output: string, name: string): string | null {
@@ -62,6 +71,9 @@ async function queryRegistryValue(name: string): Promise<string> {
 
 export async function probePlatformCompatibility(): Promise<PlatformCompatibility> {
   const base = { platform: process.platform, architecture: process.arch };
+  if (process.platform === 'darwin') {
+    return evaluatePlatformCompatibility({ ...base, buildNumber: null, installationType: 'macOS' });
+  }
   if (process.platform !== 'win32' || process.arch !== 'x64') {
     return evaluatePlatformCompatibility({ ...base, buildNumber: null, installationType: 'Unknown' });
   }
@@ -98,4 +110,3 @@ export async function assertPlatformCompatible(): Promise<void> {
   if (compatibility.status === 'supported') return;
   throw new Error(compatibility.reason === 'probe_failed' ? 'PLATFORM_PROBE_FAILED' : 'PLATFORM_UNSUPPORTED');
 }
-
