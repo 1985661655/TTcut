@@ -83,7 +83,7 @@ TTcut 是一款面向乒乓球爱好者的本地乒乓球视频自动剪辑工�
 
 ## 从源码运行
 
-要求 Windows x64、Node.js 22、npm 10。安装依赖并启动：
+Windows 正式版要求 Windows x64、Node.js 22、npm 10。Apple Silicon macOS 当前只支持开发版运行，不提供安装包、签名、公证或应用内组件下载。
 
 ```powershell
 npm install
@@ -99,6 +99,21 @@ $env:TTCUT_FFMPEG='D:\path\to\ffmpeg.exe'
 $env:TTCUT_FFPROBE='D:\path\to\ffprobe.exe'
 npm start
 ```
+
+Apple Silicon macOS 开发环境示例：
+
+```zsh
+brew install node@22 ffmpeg python@3.12
+npm install
+python3.12 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install torch numpy opencv-python
+source scripts/dev-macos-env.example.zsh
+npm start
+```
+
+Mac 开发版会优先读取 `TTCUT_PYTHON`、`TTCUT_TRACKNET_WEIGHTS`、`TTCUT_FFMPEG` 和 `TTCUT_FFPROBE`。如果没有设置 FFmpeg 变量，会尝试 Apple Silicon Homebrew 的 `/opt/homebrew/bin/ffmpeg` 和 `/opt/homebrew/bin/ffprobe`。
 
 验证与构建：
 
@@ -129,7 +144,8 @@ npm run test:e2e
 
 - 当前只接受单个 MP4 视频。
 - 板数是弹跳代理值，不是真实击球计数。
-- 支持 Windows 10 22H2 x64（build 19045）和 Windows 11 x64（Client build 22000 及以上）；不支持旧版 Windows 10、x86、ARM64 和 Windows Server。
+- 正式发布版支持 Windows 10 22H2 x64（build 19045）和 Windows 11 x64（Client build 22000 及以上）；不支持旧版 Windows 10、x86、ARM64 和 Windows Server。
+- 开发版可在 Apple Silicon macOS 上使用本机 Python、TrackNet 权重和 FFmpeg 跑通；暂不支持 Intel Mac、`.dmg` 分发、签名公证或应用内组件下载。
 
 ## 许可
 
