@@ -4,6 +4,7 @@ import {
   buildReencodeArgs,
   buildStreamCopyArgs,
   canUseStreamCopy,
+  defaultVideoEncoder,
   expectedOutputDuration,
 } from '../src/main/media-plan';
 
@@ -50,7 +51,7 @@ const oneGroup: CutGroup = {
 describe('media export planning', () => {
   it('keeps every path as its own argument and never forces CFR', () => {
     const output = 'D:\\output folder\\match_ttcut.partial.mp4';
-    const args = buildReencodeArgs(metadata.path, output, [oneGroup], metadata);
+    const args = buildReencodeArgs(metadata.path, output, [oneGroup], metadata, { videoEncoder: 'libopenh264' });
     expect(args).toContain(metadata.path);
     expect(args).toContain(output);
     expect(args).toContain('libopenh264');
@@ -59,6 +60,12 @@ describe('media export planning', () => {
     expect(args).toContain('vfr');
     expect(args).not.toContain('-r');
     expect(args.join(' ')).toContain('setsar=sar=1/1');
+  });
+
+  it('selects a platform-specific development encoder', () => {
+    expect(defaultVideoEncoder('win32')).toBe('libopenh264');
+    expect(defaultVideoEncoder('darwin')).toBe('libx264');
+    expect(defaultVideoEncoder('linux')).toBe('libx264');
   });
 
   it('builds a single concat graph for multiple groups', () => {

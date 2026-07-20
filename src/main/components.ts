@@ -194,7 +194,6 @@ function escapeRegExp(value: string): string {
 }
 
 export async function validateMediaComponent(ffmpeg: string, ffprobe: string): Promise<{ version: string }> {
-  const catalog = await loadComponentCatalog();
   const [version, probeVersion, build, encoders] = await Promise.all([
     runProcess(ffmpeg, ['-version'], { timeoutMs: 10_000 }),
     runProcess(ffprobe, ['-version'], { timeoutMs: 10_000 }),
@@ -203,16 +202,24 @@ export async function validateMediaComponent(ffmpeg: string, ffprobe: string): P
   ]);
   const firstLine = version.stdout.split(/\r?\n/)[0] ?? '';
   const probeFirstLine = probeVersion.stdout.split(/\r?\n/)[0] ?? '';
-  if (!firstLine.includes(catalog.ffmpeg.version_line) || !probeFirstLine.includes(catalog.ffmpeg.version_line)) {
+  if (process.platform === 'win32') {
+    const catalog = await loadComponentCatalog();
+    if (!firstLine.includes(catalog.ffmpeg.version_line) || !probeFirstLine.includes(catalog.ffmpeg.version_line)) {
+      throw new Error('MEDIA_RUNTIME_VERSION_MISMATCH');
+    }
+    const configuration = `${version.stdout}\n${build.stdout}`;
+    for (const flag of catalog.ffmpeg.required_build_flags) {
+      if (!configuration.includes(flag)) throw new Error(`MEDIA_RUNTIME_BUILD_FLAG_MISSING:${flag}`);
+    }
+    for (const encoder of catalog.ffmpeg.required_encoders) {
+      if (!new RegExp(`\\b${escapeRegExp(encoder)}\\b`).test(encoders.stdout)) throw new Error(`MEDIA_RUNTIME_ENCODER_MISSING:${encoder}`);
+    }
+    return { version: firstLine.replace(/^ffmpeg version\s+/, '') };
+  }
+  if (!firstLine.startsWith('ffmpeg version ') || !probeFirstLine.startsWith('ffprobe version ')) {
     throw new Error('MEDIA_RUNTIME_VERSION_MISMATCH');
   }
-  const configuration = `${version.stdout}\n${build.stdout}`;
-  for (const flag of catalog.ffmpeg.required_build_flags) {
-    if (!configuration.includes(flag)) throw new Error(`MEDIA_RUNTIME_BUILD_FLAG_MISSING:${flag}`);
-  }
-  for (const encoder of catalog.ffmpeg.required_encoders) {
-    if (!new RegExp(`\\b${escapeRegExp(encoder)}\\b`).test(encoders.stdout)) throw new Error(`MEDIA_RUNTIME_ENCODER_MISSING:${encoder}`);
-  }
+  if (!/\blibx264\b/.test(encoders.stdout)) throw new Error('MEDIA_RUNTIME_ENCODER_MISSING:libx264');
   return { version: firstLine.replace(/^ffmpeg version\s+/, '') };
 }
 

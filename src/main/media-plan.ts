@@ -2,6 +2,13 @@ import type { CutGroup, VideoMetadata } from '../shared/contracts';
 
 const TIME_EPSILON = 0.000_001;
 
+export type VideoEncoder = 'libopenh264' | 'libx264';
+export type ReencodeOptions = { videoEncoder?: VideoEncoder };
+
+export function defaultVideoEncoder(platform: NodeJS.Platform = process.platform): VideoEncoder {
+  return platform === 'win32' ? 'libopenh264' : 'libx264';
+}
+
 export function expectedOutputDuration(groups: readonly CutGroup[]): number {
   return groups.reduce((sum, group) => sum + group.end - group.start, 0);
 }
@@ -117,9 +124,11 @@ export function buildReencodeArgs(
   output: string,
   groups: readonly CutGroup[],
   metadata: VideoMetadata,
+  options: ReencodeOptions = {},
 ): string[] {
   const hasAudio = metadata.audio_codec !== null;
   const filter = buildTrimFilter(groups, hasAudio, metadata.sample_aspect_ratio);
+  const videoEncoder = options.videoEncoder ?? defaultVideoEncoder();
   const sourceVideoBitrate = metadata.average_bitrate ?? 8_000_000;
   // Re-encoding an already compressed H.264 source at the same nominal bitrate
   // compounded loss (SSIM 0.9337 on the real baseline). A 2x target was the
@@ -129,11 +138,14 @@ export function buildReencodeArgs(
     Math.min(sourceVideoBitrate * 2, 50_000_000),
   ));
   const audioBitrate = Math.round(metadata.audio_bitrate ?? 192_000);
+  const encoderArgs = videoEncoder === 'libopenh264'
+    ? ['-c:v', videoEncoder, '-profile:v', 'high', '-b:v', String(videoBitrate)]
+    : ['-c:v', videoEncoder, '-b:v', String(videoBitrate)];
   const args = [
     '-hide_banner', '-y', '-noautorotate', '-i', input,
     '-filter_complex', filter.filter, ...filter.maps,
     '-map_metadata', '0', '-sn', '-dn',
-    '-c:v', 'libopenh264', '-profile:v', 'high', '-b:v', String(videoBitrate),
+    ...encoderArgs,
     '-pix_fmt', 'yuv420p', '-fps_mode', 'vfr', '-max_muxing_queue_size', '2048',
   ];
   if (hasAudio) {
