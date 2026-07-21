@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,6 +19,10 @@ MODEL_HEIGHT = 288
 ProgressCallback = Callable[[int, int], None]
 
 
+class _AcceleratorOutOfMemory(RuntimeError):
+    pass
+
+
 @dataclass(frozen=True)
 class PredictionStats:
     detected_frames: int
@@ -33,12 +38,14 @@ class TrackNetPredictor:
         self.loaded = model
         self.confidence_threshold = confidence_threshold
         self.batch_size = batch_size
+        self.effective_batch_size = batch_size
         self.history: list[tuple[float, float, int]] = []
         self.miss_count = 0
 
     def predict(
         self, video_path: str | Path, progress_callback: ProgressCallback | None = None,
     ) -> tuple[list[TrajectoryPoint], VideoInfo, PredictionStats]:
+        self.effective_batch_size = self.batch_size
         started = time.perf_counter()
         reader = StreamingVideoReader(video_path)
         median_rgb = self._estimate_median(reader.info) if self.loaded.bg_mode else None
@@ -59,8 +66,8 @@ class TrackNetPredictor:
                 packet_batch.append(packets.copy())
                 sequences.clear()
                 packets.clear()
-            if len(input_batch) >= self.batch_size:
-                predictions.extend(self._infer_batch(input_batch, packet_batch, reader.info))
+            if len(input_batch) >= self.effective_batch_size:
+                predictions.extend(self._infer_with_backoff(input_batch, packet_batch, reader.info))
                 input_batch.clear()
                 packet_batch.clear()
                 if progress_callback:
@@ -73,7 +80,7 @@ class TrackNetPredictor:
             input_batch.append(self._assemble_sequence(sequences, median_rgb))
             packet_batch.append(actual_packets)
         if input_batch:
-            predictions.extend(self._infer_batch(input_batch, packet_batch, reader.info))
+            predictions.extend(self._infer_with_backoff(input_batch, packet_batch, reader.info))
         info = reader.final_info()
         if len(predictions) != info.decoded_frame_count:
             raise VideoError("TrackNet result count does not match decoded frame count.")
@@ -132,16 +139,23 @@ class TrackNetPredictor:
         self, inputs: Sequence[np.ndarray], packet_groups: Sequence[Sequence[FramePacket]], info: VideoInfo,
     ) -> list[TrajectoryPoint]:
         torch = import_torch()
+        tensor = None
+        heatmaps = None
+        oom_error = None
         try:
             tensor = torch.from_numpy(np.stack(inputs)).float().to(self.loaded.device)
             with torch.no_grad():
-                heatmaps = self.loaded.model(tensor).detach().cpu().numpy()
+                heatmaps = self.loaded.model(tensor)
+                heatmaps = heatmaps.detach().cpu().numpy()
         except Exception as exc:
-            if "out of memory" in str(exc).lower():
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-                raise DeviceError("CUDA ran out of memory; use CPU mode or a smaller batch.") from exc
-            raise
+            if "out of memory" not in str(exc).lower():
+                raise
+            tensor = None
+            heatmaps = None
+            exc.__traceback__ = None
+            oom_error = _AcceleratorOutOfMemory(str(exc))
+        if oom_error is not None:
+            raise oom_error
         output: list[TrajectoryPoint] = []
         scale_x, scale_y = info.width / MODEL_WIDTH, info.height / MODEL_HEIGHT
         for sequence_index, packets in enumerate(packet_groups):
@@ -173,3 +187,47 @@ class TrackNetPredictor:
                 output.append(point)
         return output
 
+    def _infer_with_backoff(
+        self, inputs: Sequence[np.ndarray], packet_groups: Sequence[Sequence[FramePacket]], info: VideoInfo,
+    ) -> list[TrajectoryPoint]:
+        output: list[TrajectoryPoint] = []
+        cursor = 0
+        while cursor < len(inputs):
+            chunk_size = min(self.effective_batch_size, len(inputs) - cursor)
+            try:
+                output.extend(self._infer_batch(
+                    inputs[cursor:cursor + chunk_size],
+                    packet_groups[cursor:cursor + chunk_size],
+                    info,
+                ))
+                cursor += chunk_size
+            except _AcceleratorOutOfMemory:
+                self._clear_accelerator_cache()
+                if chunk_size == 1:
+                    self.effective_batch_size = 1
+                    raise DeviceError("Inference ran out of memory at batch size 1.") from None
+                self.effective_batch_size = max(1, chunk_size // 2)
+                print(
+                    f"Inference ran out of memory at batch size {chunk_size}; "
+                    f"retrying with batch size {self.effective_batch_size}.",
+                    file=sys.stderr,
+                )
+        return output
+
+    def _clear_accelerator_cache(self) -> None:
+        device = getattr(self.loaded.device, "type", str(self.loaded.device))
+        device_type = str(device).split(":", 1)[0]
+        if device_type not in {"cuda", "mps"}:
+            return
+        torch = import_torch()
+        if device_type == "cuda":
+            cuda = getattr(torch, "cuda", None)
+            is_available = getattr(cuda, "is_available", None)
+            empty_cache = getattr(cuda, "empty_cache", None)
+            if callable(is_available) and is_available() and callable(empty_cache):
+                empty_cache()
+            return
+        mps = getattr(torch, "mps", None)
+        empty_cache = getattr(mps, "empty_cache", None)
+        if callable(empty_cache):
+            empty_cache()
