@@ -2,6 +2,7 @@ export type Language = 'zh-CN' | 'en';
 
 const zh = {
   autoCut: '自动剪辑', history: '历史剪辑', settings: '设置', back: '返回',
+  settingsSaveFailed: '设置未保存，请重试。',
   selectTitle: '选择比赛视频', selectDescription: '选择一个 MP4 视频，标定球桌后开始本地分析。',
   chooseVideo: '选择 MP4 视频', dropVideo: '或将单个 MP4 文件拖到这里', onlyOne: '当前版本一次只能处理一个视频。',
   fileName: '文件名', filePath: '路径', fileSize: '大小', duration: '时长', resolution: '分辨率', frameRate: '帧率',
@@ -82,6 +83,7 @@ export type Messages = DeepStrings<typeof zh>;
 
 const en: Messages = {
   autoCut: 'Auto Cut', history: 'History', settings: 'Settings', back: 'Back',
+  settingsSaveFailed: 'Settings were not saved. Try again.',
   selectTitle: 'Choose a match video', selectDescription: 'Choose one MP4 video, calibrate the table, then analyze it locally.',
   chooseVideo: 'Choose MP4 video', dropVideo: 'or drop one MP4 file here', onlyOne: 'This version processes one video at a time.',
   fileName: 'File', filePath: 'Path', fileSize: 'Size', duration: 'Duration', resolution: 'Resolution', frameRate: 'Frame rate',

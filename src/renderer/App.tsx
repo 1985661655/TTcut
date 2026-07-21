@@ -215,6 +215,7 @@ export function App() {
   const [bootstrap, setBootstrap] = useState<BootstrapData | null>(null);
   const [settings, setSettings] = useState<AppSettings>({ language: 'zh-CN', pre_roll_seconds: 2.5, post_roll_seconds: 2, inference_batch_size: 4 });
   const settingsRef = useRef(settings);
+  const persistedSettingsRef = useRef(settings);
   const settingsSaveQueueRef = useRef<Promise<void>>(Promise.resolve());
   const [view, setView] = useState<View>('auto');
   const [step, setStep] = useState<Step>('select');
@@ -267,6 +268,7 @@ export function App() {
   useEffect(() => {
     void window.ttcut.bootstrap().then((data) => {
       setBootstrap(data);
+      persistedSettingsRef.current = data.settings;
       settingsRef.current = data.settings;
       setSettings(data.settings);
       if (data.platformCompatibility.status !== 'supported' || !data.components.analysis.available || !data.components.media.available) {
@@ -374,18 +376,31 @@ export function App() {
     }
   };
 
-  const saveSettingsPartial = (partial: Partial<AppSettings>): Promise<void> => {
+  const saveSettingsPartial = (partial: Partial<AppSettings>): Promise<boolean> => {
     const next = { ...settingsRef.current, ...partial };
     settingsRef.current = next;
     setSettings(next);
     const save = settingsSaveQueueRef.current.then(async () => {
-      const saved = await window.ttcut.saveSettings(next);
-      if (settingsRef.current === next) {
-        settingsRef.current = saved;
-        setSettings(saved);
+      try {
+        const saved = await window.ttcut.saveSettings(next);
+        persistedSettingsRef.current = saved;
+        if (settingsRef.current === next) {
+          settingsRef.current = saved;
+          setSettings(saved);
+          setToast(null);
+        }
+        return true;
+      } catch {
+        if (settingsRef.current === next) {
+          const persisted = persistedSettingsRef.current;
+          settingsRef.current = persisted;
+          setSettings(persisted);
+          setToast(messages(persisted.language).settingsSaveFailed);
+        }
+        return false;
       }
     });
-    settingsSaveQueueRef.current = save.catch(() => undefined);
+    settingsSaveQueueRef.current = save.then(() => undefined);
     return save;
   };
 
@@ -393,8 +408,8 @@ export function App() {
     if (language === settingsRef.current.language) return;
     setLanguageTransition(true);
     await new Promise((resolve) => setTimeout(resolve, 160));
-    await saveSettingsPartial({ language });
-    document.documentElement.lang = language;
+    const saved = await saveSettingsPartial({ language });
+    if (saved) document.documentElement.lang = language;
     await new Promise((resolve) => setTimeout(resolve, 160));
     setLanguageTransition(false);
   };
@@ -538,8 +553,8 @@ export function App() {
               <article className="card setting-card">
                 <div><h2>{t.language}</h2></div>
                 <div className="segmented">
-                  <button className={settings.language === 'zh-CN' ? 'selected' : ''} onClick={() => void changeLanguage('zh-CN')}>{t.chinese}</button>
-                  <button className={settings.language === 'en' ? 'selected' : ''} onClick={() => void changeLanguage('en')}>{t.english}</button>
+                  <button className={settings.language === 'zh-CN' ? 'selected' : ''} disabled={!bootstrap} onClick={() => void changeLanguage('zh-CN')}>{t.chinese}</button>
+                  <button className={settings.language === 'en' ? 'selected' : ''} disabled={!bootstrap} onClick={() => void changeLanguage('en')}>{t.english}</button>
                 </div>
               </article>
               <article className="card setting-card platform-card">
@@ -548,15 +563,15 @@ export function App() {
               </article>
               <article className="card timing-setting-card batch-setting-card">
                 <div><h2>{t.inferenceBatch}</h2><p>{t.inferenceBatchDetail}</p></div>
-                <div className="choice-row four">{([4, 8, 12, 16] as const).map((value, index) => <button aria-pressed={settings.inference_batch_size === value} className={settings.inference_batch_size === value ? 'selected' : ''} key={value} onClick={() => void saveSettingsPartial({ inference_batch_size: value })}><strong>{[t.batchLowMemory, t.batchBalanced, t.batchFaster, t.batchMaximum][index]}</strong><span>{value}</span></button>)}</div>
+                <div className="choice-row four">{([4, 8, 12, 16] as const).map((value, index) => <button aria-pressed={settings.inference_batch_size === value} className={settings.inference_batch_size === value ? 'selected' : ''} disabled={!bootstrap} key={value} onClick={() => void saveSettingsPartial({ inference_batch_size: value })}><strong>{[t.batchLowMemory, t.batchBalanced, t.batchFaster, t.batchMaximum][index]}</strong><span>{value}</span></button>)}</div>
               </article>
               <article className="card timing-setting-card">
                 <div><h2>{t.preRoll}</h2><p>{t.preRollSettingDetail}</p></div>
-                <div className="choice-row">{([1.5, 2.5, 5] as const).map((value, index) => <button className={settings.pre_roll_seconds === value ? 'selected' : ''} key={value} onClick={() => void saveSettingsPartial({ pre_roll_seconds: value })}><strong>{[t.short, t.medium, t.long][index]}</strong><span>{value} s</span></button>)}</div>
+                <div className="choice-row">{([1.5, 2.5, 5] as const).map((value, index) => <button className={settings.pre_roll_seconds === value ? 'selected' : ''} disabled={!bootstrap} key={value} onClick={() => void saveSettingsPartial({ pre_roll_seconds: value })}><strong>{[t.short, t.medium, t.long][index]}</strong><span>{value} s</span></button>)}</div>
               </article>
               <article className="card timing-setting-card">
                 <div><h2>{t.postRoll}</h2><p>{t.postRollSettingDetail}</p></div>
-                <div className="choice-row four">{([0.5, 1, 2, 4] as const).map((value, index) => <button className={settings.post_roll_seconds === value ? 'selected' : ''} key={value} onClick={() => void saveSettingsPartial({ post_roll_seconds: value })}><strong>{[t.veryShort, t.short, t.medium, t.long][index]}</strong><span>{value} s</span></button>)}</div>
+                <div className="choice-row four">{([0.5, 1, 2, 4] as const).map((value, index) => <button className={settings.post_roll_seconds === value ? 'selected' : ''} disabled={!bootstrap} key={value} onClick={() => void saveSettingsPartial({ post_roll_seconds: value })}><strong>{[t.veryShort, t.short, t.medium, t.long][index]}</strong><span>{value} s</span></button>)}</div>
               </article>
               <article className="card components-card">
                 <h2>{t.components}</h2>
