@@ -214,6 +214,8 @@ function RallyPreviewDialog({ video, videoDuration, rally, translations, onClose
 export function App() {
   const [bootstrap, setBootstrap] = useState<BootstrapData | null>(null);
   const [settings, setSettings] = useState<AppSettings>({ language: 'zh-CN', pre_roll_seconds: 2.5, post_roll_seconds: 2, inference_batch_size: 4 });
+  const settingsRef = useRef(settings);
+  const settingsSaveQueueRef = useRef<Promise<void>>(Promise.resolve());
   const [view, setView] = useState<View>('auto');
   const [step, setStep] = useState<Step>('select');
   const [video, setVideo] = useState<SelectedVideo | null>(null);
@@ -265,6 +267,7 @@ export function App() {
   useEffect(() => {
     void window.ttcut.bootstrap().then((data) => {
       setBootstrap(data);
+      settingsRef.current = data.settings;
       setSettings(data.settings);
       if (data.platformCompatibility.status !== 'supported' || !data.components.analysis.available || !data.components.media.available) {
         setView('settings');
@@ -371,20 +374,29 @@ export function App() {
     }
   };
 
+  const saveSettingsPartial = (partial: Partial<AppSettings>): Promise<void> => {
+    const next = { ...settingsRef.current, ...partial };
+    settingsRef.current = next;
+    setSettings(next);
+    const save = settingsSaveQueueRef.current.then(async () => {
+      const saved = await window.ttcut.saveSettings(next);
+      if (settingsRef.current === next) {
+        settingsRef.current = saved;
+        setSettings(saved);
+      }
+    });
+    settingsSaveQueueRef.current = save.catch(() => undefined);
+    return save;
+  };
+
   const changeLanguage = async (language: Language) => {
-    if (language === settings.language) return;
+    if (language === settingsRef.current.language) return;
     setLanguageTransition(true);
     await new Promise((resolve) => setTimeout(resolve, 160));
-    const next = await window.ttcut.saveSettings({ ...settings, language });
-    setSettings(next);
+    await saveSettingsPartial({ language });
     document.documentElement.lang = language;
     await new Promise((resolve) => setTimeout(resolve, 160));
     setLanguageTransition(false);
-  };
-
-  const saveSettingsPartial = async (partial: Partial<AppSettings>) => {
-    const next = await window.ttcut.saveSettings({ ...settings, ...partial });
-    setSettings(next);
   };
 
   const loadHistory = async () => {
@@ -536,7 +548,7 @@ export function App() {
               </article>
               <article className="card timing-setting-card batch-setting-card">
                 <div><h2>{t.inferenceBatch}</h2><p>{t.inferenceBatchDetail}</p></div>
-                <div className="choice-row four">{([4, 8, 12, 16] as const).map((value, index) => <button className={settings.inference_batch_size === value ? 'selected' : ''} key={value} onClick={() => void saveSettingsPartial({ inference_batch_size: value })}><strong>{[t.batchLowMemory, t.batchBalanced, t.batchFaster, t.batchMaximum][index]}</strong><span>{value}</span></button>)}</div>
+                <div className="choice-row four">{([4, 8, 12, 16] as const).map((value, index) => <button aria-pressed={settings.inference_batch_size === value} className={settings.inference_batch_size === value ? 'selected' : ''} key={value} onClick={() => void saveSettingsPartial({ inference_batch_size: value })}><strong>{[t.batchLowMemory, t.batchBalanced, t.batchFaster, t.batchMaximum][index]}</strong><span>{value}</span></button>)}</div>
               </article>
               <article className="card timing-setting-card">
                 <div><h2>{t.preRoll}</h2><p>{t.preRollSettingDetail}</p></div>

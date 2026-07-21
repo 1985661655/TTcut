@@ -207,8 +207,31 @@ test('real CUDA analysis, single-rally export, and final preview', async ({}, te
     await expect(page.getByRole('heading', { name: '设置', exact: true })).toBeVisible();
     await expect(page.getByRole('heading', { name: '回合前时间' })).toBeVisible();
     await expect(page.getByRole('heading', { name: '回合后时间' })).toBeVisible();
-    await page.locator('.timing-setting-card').first().getByRole('button').first().click();
-    await page.locator('.timing-setting-card').nth(1).getByRole('button').first().click();
+    const batchCard = page.locator('article.timing-setting-card').filter({ has: page.getByRole('heading', { name: '推理批量', exact: true }) });
+    const preRollCard = page.locator('article.timing-setting-card').filter({ has: page.getByRole('heading', { name: '回合前时间', exact: true }) });
+    const postRollCard = page.locator('article.timing-setting-card').filter({ has: page.getByRole('heading', { name: '回合后时间', exact: true }) });
+    const batch8 = batchCard.getByRole('button', { name: /推荐\s*8/ });
+    const preRollShort = preRollCard.getByRole('button', { name: /短\s*1\.5 s/ });
+    const postRollVeryShort = postRollCard.getByRole('button', { name: /极短\s*0\.5 s/ });
+    await batch8.click();
+    await expect(batch8).toHaveClass(/selected/);
+    await expect(batch8).toHaveAttribute('aria-pressed', 'true');
+    await preRollShort.click();
+    await expect(preRollShort).toHaveClass(/selected/);
+    await postRollVeryShort.click();
+    await expect(postRollVeryShort).toHaveClass(/selected/);
+    await expect.poll(async () => {
+      try {
+        return JSON.parse(await readFile(path.join(isolatedUserData, 'settings.json'), 'utf8')) as unknown;
+      } catch {
+        return null;
+      }
+    }).toMatchObject({
+      language: 'zh-CN',
+      pre_roll_seconds: 1.5,
+      post_roll_seconds: 0.5,
+      inference_batch_size: 8,
+    });
 
     await page.getByRole('button', { name: '历史剪辑' }).click();
     await expect(page.getByRole('heading', { name: '还没有历史记录' })).toBeVisible();
