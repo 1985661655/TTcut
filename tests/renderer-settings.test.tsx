@@ -1,3 +1,4 @@
+import { StrictMode } from 'react';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { TTcutApi, BootstrapData } from '../src/shared/api';
@@ -79,6 +80,66 @@ describe('renderer settings updates', () => {
 
     await act(async () => { pendingBootstrap.resolve(bootstrapData); });
     for (const control of controls) await waitFor(() => expect(control).toBeEnabled());
+  });
+
+  it('ignores a stale StrictMode bootstrap response after settings are saved', async () => {
+    const staleBootstrap = deferred<BootstrapData>();
+    const currentBootstrap = deferred<BootstrapData>();
+    const failedSave = deferred<AppSettings>();
+    let bootstrapAttempt = 0;
+    let saveAttempt = 0;
+    let taskSubscription = 0;
+    let closeSubscription = 0;
+    const removeTasks = [vi.fn(), vi.fn()];
+    const removeCloses = [vi.fn(), vi.fn()];
+    const bootstrap = vi.fn(() => {
+      bootstrapAttempt += 1;
+      return bootstrapAttempt === 1 ? staleBootstrap.promise : currentBootstrap.promise;
+    });
+    const saveSettings = vi.fn((settings: AppSettings): Promise<AppSettings> => {
+      saveAttempt += 1;
+      return saveAttempt === 1 ? Promise.resolve(settings) : failedSave.promise;
+    });
+    const api = {
+      bootstrap,
+      saveSettings,
+      onTaskEvent: vi.fn(() => removeTasks[taskSubscription++]!),
+      onCloseRequested: vi.fn(() => removeCloses[closeSubscription++]!),
+    } as unknown as TTcutApi;
+    Object.defineProperty(window, 'ttcut', { configurable: true, value: api });
+
+    const rendered = render(<StrictMode><App /></StrictMode>);
+    await waitFor(() => expect(bootstrap).toHaveBeenCalledTimes(2));
+    fireEvent.click(screen.getByRole('button', { name: '设置' }));
+    const batchCard = screen.getByRole('heading', { name: '推理批量' }).closest('article')!;
+    const batch12 = within(batchCard).getByRole('button', { name: /更快\s*12/ });
+    const batch16 = within(batchCard).getByRole('button', { name: /最大\s*16/ });
+
+    await act(async () => {
+      currentBootstrap.resolve({
+        ...bootstrapData,
+        settings: { ...initialSettings, inference_batch_size: 8 },
+      });
+    });
+    await waitFor(() => expect(batch12).toBeEnabled());
+    fireEvent.click(batch12);
+    await waitFor(() => expect(saveSettings).toHaveBeenCalledTimes(1));
+    expect(batch12).toHaveAttribute('aria-pressed', 'true');
+
+    await act(async () => { staleBootstrap.resolve(bootstrapData); });
+    expect(batch12).toHaveAttribute('aria-pressed', 'true');
+    expect(saveSettings).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(batch16);
+    await waitFor(() => expect(saveSettings).toHaveBeenCalledTimes(2));
+    await act(async () => { failedSave.reject(new Error('disk write failed')); });
+    await waitFor(() => expect(batch12).toHaveAttribute('aria-pressed', 'true'));
+
+    rendered.unmount();
+    expect(api.onTaskEvent).toHaveBeenCalledTimes(2);
+    expect(api.onCloseRequested).toHaveBeenCalledTimes(2);
+    for (const removeTask of removeTasks) expect(removeTask).toHaveBeenCalledTimes(1);
+    for (const removeClose of removeCloses) expect(removeClose).toHaveBeenCalledTimes(1);
   });
 
   it('serializes saves, merges the latest intent, and ignores stale results', async () => {

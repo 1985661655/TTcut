@@ -266,7 +266,9 @@ export function App() {
         : t.unavailable;
 
   useEffect(() => {
+    let active = true;
     void window.ttcut.bootstrap().then((data) => {
+      if (!active) return;
       setBootstrap(data);
       persistedSettingsRef.current = data.settings;
       settingsRef.current = data.settings;
@@ -320,7 +322,11 @@ export function App() {
       }
     });
     const removeClose = window.ttcut.onCloseRequested(() => setCloseDialog(true));
-    return () => { removeTask(); removeClose(); };
+    return () => {
+      active = false;
+      removeTask();
+      removeClose();
+    };
   }, []);
 
   const reset = useCallback(() => {
