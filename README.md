@@ -140,7 +140,7 @@ TTCUT_APP_DESTINATION=/Applications/TTcut.app
 TTCUT_PROJECT_DIR="$PWD" TTCUT_PYTHON_PATH="$PWD/.venv312/bin/python" npm run install:macos-launcher
 ```
 
-普通项目代码更新无需重装；只有启动器脚本、图标或任何配置路径改变时，才需要重新运行 `npm run install:macos-launcher`。安装命令默认会安全替换现有的 `/Applications/TTcut.app`；需要保留同名 App 时，请用 `TTCUT_APP_DESTINATION` 指向其他路径。删除启动器可使用：
+普通项目代码更新无需重装；只有启动器脚本、安装器本身、图标、`Info.plist` 生成逻辑或任何配置路径改变时，才需要重新运行 `npm run install:macos-launcher`。安装命令默认会安全替换现有的 `/Applications/TTcut.app`；需要保留同名 App 时，请用 `TTCUT_APP_DESTINATION` 指向其他路径。删除启动器可使用：
 
 ```zsh
 rm -rf /Applications/TTcut.app

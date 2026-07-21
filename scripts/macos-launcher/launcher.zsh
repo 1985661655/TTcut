@@ -159,6 +159,10 @@ trap cleanup EXIT
 trap 'exit 1' INT TERM HUP
 
 prepare_legacy_lock() {
+  if [[ -L "$LOCK_FILE" ]]; then
+    show_error 'TTcut 启动锁路径不能是符号链接。'
+    return 1
+  fi
   [[ -d "$LOCK_FILE" ]] || return 0
 
   local owner_file="$LOCK_FILE/owner" owner_pid='' owner_fingerprint=''
@@ -254,6 +258,22 @@ fi
 
 log "环境摘要: launcher=${0:A} config=$CONFIG_FILE state=$STATE_DIR logs=$LOG_DIR PATH=$SAFE_PATH"
 
+if ! prepare_pid_path; then
+  show_error '无法写入 TTcut 进程状态。'
+  exit 1
+fi
+
+typeset stale_pid_state=0
+if [[ -f "$PID_FILE" ]]; then
+  typeset existing_pid existing_fingerprint
+  IFS=$'\t' read -r existing_pid existing_fingerprint < "$PID_FILE"
+  if pid_matches_fingerprint "$existing_pid" "$existing_fingerprint"; then
+    show_running 'TTcut 已经在运行'
+    exit 0
+  fi
+  stale_pid_state=1
+fi
+
 if [[ ! -r "$CONFIG_FILE" ]]; then
   show_error "无法读取启动器配置文件：$CONFIG_FILE"
   exit 1
@@ -331,18 +351,7 @@ fi
 
 export PATH="${NPM_PATH:h}:${PYTHON_PATH:h}:$SAFE_PATH"
 
-if ! prepare_pid_path; then
-  show_error '无法写入 TTcut 进程状态。'
-  exit 1
-fi
-
-if [[ -f "$PID_FILE" ]]; then
-  typeset existing_pid existing_fingerprint
-  IFS=$'\t' read -r existing_pid existing_fingerprint < "$PID_FILE"
-  if pid_matches_fingerprint "$existing_pid" "$existing_fingerprint"; then
-    show_running 'TTcut 已经在运行'
-    exit 0
-  fi
+if (( stale_pid_state )); then
   if ! rm -f -- "$PID_FILE"; then
     show_error '无法清理过期的 TTcut 进程状态。'
     exit 1

@@ -463,6 +463,26 @@ describe('macOS launcher', () => {
     }
   });
 
+  macIt('rejects a legacy lock symlink without touching its target', () => {
+    const fixture = makeFixture();
+    const externalLockDir = join(fixture.root, 'external legacy lock');
+    const externalOwner = join(externalLockDir, 'owner');
+    const lockFile = join(fixture.state, 'launcher.lock');
+    mkdirSync(fixture.state, { recursive: true });
+    mkdirSync(externalLockDir, { recursive: true });
+    writeFileSync(externalOwner, '999999\tstale-fingerprint\n');
+    symlinkSync(externalLockDir, lockFile);
+
+    const result = run(fixture);
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('TTcut 启动锁路径不能是符号链接');
+    expect(lstatSync(lockFile).isSymbolicLink()).toBe(true);
+    expect(statSync(externalLockDir).isDirectory()).toBe(true);
+    expect(readFileSync(externalOwner, 'utf8')).toBe('999999\tstale-fingerprint\n');
+    expectNpmNotStarted(fixture);
+  });
+
   macIt('cleans up a stale legacy directory lock before using lockf', async () => {
     const fixture = makeFixture();
     const lockDir = join(fixture.state, 'launcher.lock');
@@ -509,6 +529,34 @@ describe('macOS launcher', () => {
       expect(readFileSync(fixture.npmCalls, 'utf8').trim()).toBe('called');
     } finally {
       await terminateProcess(unrelated);
+    }
+  });
+
+  macIt.each([
+    ['configuration', (fixture: Fixture) => ({ TTCUT_LAUNCHER_CONFIG: join(fixture.root, 'missing.conf') })],
+    ['TrackNet weights', (fixture: Fixture) => {
+      rmSync(fixture.weights);
+      return {};
+    }],
+    ['project directory', (fixture: Fixture) => {
+      rmSync(fixture.project, { recursive: true });
+      return {};
+    }],
+  ] as const)('reports an existing live process before validating missing %s', async (_name, makeInvalid) => {
+    const fixture = makeFixture();
+    const owner = spawn('/bin/sleep', ['30']);
+    try {
+      await waitForCondition(() => processState(owner.pid ?? -1) !== '', 'live PID owner startup');
+      mkdirSync(fixture.state, { recursive: true });
+      writeFileSync(join(fixture.state, 'launcher.pid'), `${owner.pid}\t${processFingerprint(owner.pid ?? -1)}\n`);
+
+      const result = run(fixture, makeInvalid(fixture));
+
+      expect(result.status).toBe(0);
+      expect(result.stderr).toContain('TTcut 已经在运行');
+      expectNpmNotStarted(fixture);
+    } finally {
+      await terminateProcess(owner);
     }
   });
 
