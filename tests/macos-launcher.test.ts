@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 
 const launcher = join(process.cwd(), 'scripts/macos-launcher/launcher.zsh');
@@ -35,10 +35,12 @@ function makeFixture(): Fixture {
   const home = join(root, 'home');
   const project = join(root, '项目 space');
   const bin = join(root, 'bin space');
+  const pythonBin = join(root, 'python bin');
   const state = join(root, 'state');
   const logs = join(root, 'logs');
   mkdirSync(join(project, 'node_modules'), { recursive: true });
   mkdirSync(bin, { recursive: true });
+  mkdirSync(pythonBin, { recursive: true });
   mkdirSync(home, { recursive: true });
   writeFileSync(join(project, 'package.json'), '{"name":"launcher-test"}\n');
 
@@ -50,7 +52,7 @@ function makeFixture(): Fixture {
     state,
     logs,
     npm: join(bin, 'npm'),
-    python: join(bin, 'python'),
+    python: join(pythonBin, 'python'),
     weights: join(root, 'TrackNet 权重.pt'),
     ffmpeg: join(bin, 'ffmpeg'),
     ffprobe: join(bin, 'ffprobe'),
@@ -68,6 +70,16 @@ print -r -- "$TTCUT_FFMPEG" > "$root/captured-env.ffmpeg"
 print -r -- "$TTCUT_FFPROBE" > "$root/captured-env.ffprobe"
 print -r -- "$0 $*" > "$root/captured-env.argv"
 print -r -- called >> "$root/npm-calls"
+if [[ -f "$root/force-pid-write-failure" ]]; then
+  /bin/sleep 60 &
+  descendant=$!
+  print -r -- "$$" > "$root/failure-parent.pid"
+  print -r -- "$descendant" > "$root/failure-child.pid"
+  mkdir "$root/state/launcher.pid"
+  trap 'exit 0' TERM INT
+  wait "$descendant"
+  exit 0
+fi
 if [[ -f "$root/exit-immediately" ]]; then
   exit 42
 fi
@@ -75,7 +87,7 @@ zmodload zsh/zselect
 trap 'exit 0' TERM INT
 while true; do zselect -t 6000; done
 `);
-  executable(fixture.python);
+  executable(fixture.python, '#!/bin/zsh\nexec /usr/bin/python3 "$@"\n');
   executable(fixture.ffmpeg);
   executable(fixture.ffprobe);
   executable(fixture.osascript, `#!/bin/zsh
@@ -133,6 +145,10 @@ function processState(pid: number): string {
   return spawnSync('/bin/ps', ['-o', 'stat=', '-p', String(pid)], { encoding: 'utf8' }).stdout.trim();
 }
 
+function processFingerprint(pid: number): string {
+  return spawnSync('/bin/ps', ['-o', 'lstart=', '-p', String(pid)], { encoding: 'utf8' }).stdout.trim();
+}
+
 function terminatePid(pid: number): void {
   try {
     process.kill(pid, 'SIGTERM');
@@ -162,6 +178,12 @@ function cleanup(fixture: Fixture): void {
       terminatePid(pid);
     }
   }
+  for (const name of ['failure-parent.pid', 'failure-child.pid']) {
+    const processFile = join(fixture.root, name);
+    if (!existsSync(processFile)) continue;
+    const pid = Number.parseInt(readFileSync(processFile, 'utf8'), 10);
+    if (Number.isInteger(pid) && pid > 0 && processState(pid)) terminatePid(pid);
+  }
   rmSync(fixture.root, { recursive: true, force: true });
 }
 
@@ -184,6 +206,15 @@ async function waitForFiles(paths: string[], description: string): Promise<void>
   }
   const missing = paths.filter((path) => !existsSync(path) || readFileSync(path, 'utf8').trim().length === 0);
   throw new Error(`${description} timed out after 2000ms; incomplete files: ${missing.join(', ')}`);
+}
+
+async function waitForCondition(condition: () => boolean, description: string): Promise<void> {
+  const deadline = Date.now() + 2_000;
+  while (Date.now() < deadline) {
+    if (condition()) return;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error(`${description} timed out after 2000ms`);
 }
 
 afterEach(() => {
@@ -287,7 +318,7 @@ describe('macOS launcher', () => {
       `${fixture.capture}.argv`,
       fixture.npmCalls,
     ], 'npm environment capture');
-    expect(readFileSync(`${fixture.capture}.path`, 'utf8').trim()).toBe(SAFE_PATH);
+    expect(readFileSync(`${fixture.capture}.path`, 'utf8').trim()).toBe(`${dirname(fixture.npm)}:${dirname(fixture.python)}:${SAFE_PATH}`);
     expect(readFileSync(`${fixture.capture}.python`, 'utf8').trim()).toBe(fixture.python);
     expect(readFileSync(`${fixture.capture}.weights`, 'utf8').trim()).toBe(fixture.weights);
     expect(readFileSync(`${fixture.capture}.ffmpeg`, 'utf8').trim()).toBe(fixture.ffmpeg);
@@ -295,6 +326,10 @@ describe('macOS launcher', () => {
     expect(readFileSync(`${fixture.capture}.argv`, 'utf8')).toContain(' start');
     const pidRecord = readFileSync(join(fixture.state, 'launcher.pid'), 'utf8').trim();
     expect(pidRecord).toMatch(/^\d+\t.+$/);
+    const npmPid = Number.parseInt(pidRecord, 10);
+    const npmPgid = spawnSync('/bin/ps', ['-o', 'pgid=', '-p', String(npmPid)], { encoding: 'utf8' }).stdout.trim();
+    expect(npmPgid).toBe(String(npmPid));
+    expect(readdirSync(fixture.state).filter((name) => name.includes('candidate') || name.includes('stale'))).toEqual([]);
     expect(readFileSync(join(fixture.logs, 'launcher.log'), 'utf8')).toContain('环境摘要');
   });
 
@@ -329,14 +364,76 @@ describe('macOS launcher', () => {
     expect(results.some(({ stderr }) => stderr.includes('TTcut 正在启动') || stderr.includes('TTcut 已经在运行'))).toBe(true);
   });
 
+  macIt('ignores a complete unpublished candidate owned by a live process', async () => {
+    const fixture = makeFixture();
+    mkdirSync(fixture.state, { recursive: true });
+    const candidate = join(fixture.state, 'launcher.lock.candidate.unpublished');
+    writeFileSync(candidate, `${process.pid}\t${processFingerprint(process.pid)}\n`);
+
+    expect(run(fixture).status).toBe(0);
+    await waitForFiles([fixture.npmCalls], 'npm invocation with an unpublished candidate');
+    expect(readFileSync(candidate, 'utf8').trim()).toContain(`${process.pid}\t`);
+  });
+
+  macIt('recovers an incomplete canonical lock record', async () => {
+    const fixture = makeFixture();
+    mkdirSync(fixture.state, { recursive: true });
+    writeFileSync(join(fixture.state, 'launcher.lock'), 'partial');
+
+    expect(run(fixture).status).toBe(0);
+    await waitForFiles([fixture.npmCalls], 'npm invocation after incomplete lock recovery');
+    expect(readFileSync(fixture.npmCalls, 'utf8').trim()).toBe('called');
+  });
+
+  macIt('returns an error when the state directory cannot publish a lock', () => {
+    const fixture = makeFixture();
+    mkdirSync(fixture.state, { recursive: true });
+    chmodSync(fixture.state, 0o555);
+    try {
+      const result = run(fixture);
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain('无法写入 TTcut 启动锁');
+      expect(result.stderr).not.toContain('TTcut 正在启动');
+      expectNpmNotStarted(fixture);
+    } finally {
+      chmodSync(fixture.state, 0o755);
+    }
+  });
+
+  macIt('does not remove a lock whose published owner record changed', async () => {
+    const fixture = makeFixture();
+    const lockFile = join(fixture.state, 'launcher.lock');
+    const launch = runAsync(fixture, { TTCUT_LAUNCHER_STARTUP_WAIT: '0.6' });
+    try {
+      await waitForCondition(() => existsSync(lockFile) && statSync(lockFile).isFile(), 'published launcher lock');
+      writeFileSync(lockFile, '999999\tforeign-owner\n');
+    } finally {
+      await launch;
+    }
+
+    expect((await launch).status).toBe(0);
+    expect(readFileSync(lockFile, 'utf8').trim()).toBe('999999\tforeign-owner');
+  });
+
   macIt('removes a stale launcher lock and retries once', async () => {
+    const fixture = makeFixture();
+    const lockFile = join(fixture.state, 'launcher.lock');
+    mkdirSync(fixture.state, { recursive: true });
+    writeFileSync(lockFile, '999999\tstale-fingerprint\n');
+
+    expect(run(fixture).status).toBe(0);
+    await waitForFiles([fixture.npmCalls], 'npm invocation after stale lock removal');
+    expect(existsSync(lockFile)).toBe(false);
+  });
+
+  macIt('cleans up a legacy directory lock', async () => {
     const fixture = makeFixture();
     const lockDir = join(fixture.state, 'launcher.lock');
     mkdirSync(lockDir, { recursive: true });
     writeFileSync(join(lockDir, 'owner'), '999999\tstale-fingerprint\n');
 
     expect(run(fixture).status).toBe(0);
-    await waitForFiles([fixture.npmCalls], 'npm invocation after stale lock removal');
+    await waitForFiles([fixture.npmCalls], 'npm invocation after legacy lock cleanup');
     expect(existsSync(lockDir)).toBe(false);
   });
 
@@ -387,6 +484,28 @@ describe('macOS launcher', () => {
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('无法写入 TTcut 进程状态');
     expectNpmNotStarted(fixture);
+  });
+
+  macIt('kills the complete npm process group when PID publication fails', async () => {
+    const fixture = makeFixture();
+    writeFileSync(join(fixture.root, 'force-pid-write-failure'), '1');
+
+    const result = run(fixture, { TTCUT_LAUNCHER_STARTUP_WAIT: '1' });
+    await waitForFiles([
+      join(fixture.root, 'failure-parent.pid'),
+      join(fixture.root, 'failure-child.pid'),
+    ], 'PID failure process records');
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('无法写入 TTcut 进程状态');
+    const parentPid = Number.parseInt(readFileSync(join(fixture.root, 'failure-parent.pid'), 'utf8'), 10);
+    const childPid = Number.parseInt(readFileSync(join(fixture.root, 'failure-child.pid'), 'utf8'), 10);
+    await waitForCondition(
+      () => processState(parentPid) === '' && processState(childPid) === '',
+      'failed npm process group cleanup',
+    );
+    expect(processState(parentPid)).toBe('');
+    expect(processState(childPid)).toBe('');
+    expect(existsSync(join(fixture.state, 'launcher.pid'))).toBe(false);
   });
 
   macIt('reports an npm process that exits during startup', () => {

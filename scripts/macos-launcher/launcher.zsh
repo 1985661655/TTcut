@@ -12,14 +12,17 @@ readonly STATE_DIR="${TTCUT_LAUNCHER_STATE_DIR:-${HOME}/Library/Application Supp
 readonly LOG_DIR="${TTCUT_LAUNCHER_LOG_DIR:-${HOME}/Library/Logs/TTcut}"
 readonly LOG_FILE="${LOG_DIR}/launcher.log"
 readonly PID_FILE="${STATE_DIR}/launcher.pid"
-readonly LOCK_DIR="${STATE_DIR}/launcher.lock"
-readonly LOCK_OWNER_FILE="${LOCK_DIR}/owner"
+readonly LOCK_FILE="${STATE_DIR}/launcher.lock"
 readonly OSASCRIPT_PATH="${TTCUT_LAUNCHER_OSASCRIPT:-/usr/bin/osascript}"
 readonly MAX_LOG_BYTES=$((5 * 1024 * 1024))
 
 typeset LOCK_HELD=0
+typeset LOCK_OWNER_RECORD=''
+typeset LOCK_CANDIDATE_FILE=''
 typeset CHILD_PID=''
+typeset CHILD_PGID=''
 typeset PID_TEMP_FILE=''
+typeset PID_OWNER_RECORD=''
 
 log() {
   [[ -d "$LOG_DIR" ]] || return 0
@@ -75,34 +78,96 @@ pid_matches_fingerprint() {
 
 release_lock() {
   [[ "$LOCK_HELD" == 1 ]] || return 0
-  if [[ -r "$LOCK_OWNER_FILE" ]]; then
-    local owner_pid owner_fingerprint
-    IFS=$'\t' read -r owner_pid owner_fingerprint < "$LOCK_OWNER_FILE"
-    if [[ "$owner_pid" != "$$" ]]; then
-      LOCK_HELD=0
-      return 0
-    fi
+  local published_record=''
+  if [[ -f "$LOCK_FILE" ]]; then
+    published_record=$(<"$LOCK_FILE")
   fi
-  rm -f -- "$LOCK_OWNER_FILE" 2>/dev/null
-  rmdir -- "$LOCK_DIR" 2>/dev/null
+  if [[ -n "$LOCK_OWNER_RECORD" && "$published_record" == "$LOCK_OWNER_RECORD" ]]; then
+    rm -f -- "$LOCK_FILE" 2>/dev/null
+  fi
   LOCK_HELD=0
 }
 
-terminate_child() {
-  local pid=$1 attempt
+process_group_id() {
+  local pgid
+  pgid=$(/bin/ps -o pgid= -p "$1" 2>/dev/null)
+  print -r -- "${pgid//[[:space:]]/}"
+}
+
+process_group_live() {
+  /bin/kill -0 -- "-$1" 2>/dev/null
+}
+
+terminate_child_group() {
+  local pid=$1 attempt pgid
   [[ "$pid" == <-> ]] || return 0
-  kill -TERM "$pid" 2>/dev/null || true
-  for attempt in {1..10}; do
-    is_live_pid "$pid" || break
-    /bin/sleep 0.1
-  done
-  is_live_pid "$pid" && kill -KILL "$pid" 2>/dev/null || true
+  if [[ "$CHILD_PGID" == "$pid" ]]; then
+    pgid=$pid
+  else
+    pgid=$(process_group_id "$pid")
+  fi
+  if [[ "$pgid" == "$pid" ]]; then
+    /bin/kill -s TERM -- "-$pgid" 2>/dev/null || true
+    for attempt in {1..20}; do
+      process_group_live "$pgid" || break
+      /bin/sleep 0.05
+    done
+    process_group_live "$pgid" && /bin/kill -s KILL -- "-$pgid" 2>/dev/null || true
+    for attempt in {1..20}; do
+      process_group_live "$pgid" || break
+      /bin/sleep 0.05
+    done
+  else
+    kill -TERM "$pid" 2>/dev/null || true
+    for attempt in {1..20}; do
+      is_live_pid "$pid" || break
+      /bin/sleep 0.05
+    done
+    is_live_pid "$pid" && kill -KILL "$pid" 2>/dev/null || true
+  fi
   wait "$pid" 2>/dev/null || true
+  [[ "$CHILD_PGID" == "$pid" ]] && CHILD_PGID=''
+}
+
+wait_for_private_process_group() {
+  local pid=$1 attempt pgid
+  for attempt in {1..50}; do
+    is_live_pid "$pid" || return 1
+    pgid=$(process_group_id "$pid")
+    if [[ "$pgid" == "$pid" ]]; then
+      /bin/sleep 0.05
+      is_live_pid "$pid" || return 1
+      if [[ "$(process_group_id "$pid")" == "$pid" ]]; then
+        CHILD_PGID=$pid
+        return 0
+      fi
+    fi
+    /bin/sleep 0.02
+  done
+  return 1
+}
+
+remove_owned_pid_state() {
+  local published_record=''
+  if [[ -f "$PID_FILE" ]]; then
+    published_record=$(<"$PID_FILE")
+    if [[ -n "$PID_OWNER_RECORD" && "$published_record" == "$PID_OWNER_RECORD" ]]; then
+      rm -f -- "$PID_FILE" 2>/dev/null
+    fi
+  elif [[ -d "$PID_FILE" ]]; then
+    rmdir -- "$PID_FILE" 2>/dev/null
+  fi
+  [[ -n "$PID_TEMP_FILE" ]] && rm -f -- "$PID_TEMP_FILE" 2>/dev/null
+  PID_TEMP_FILE=''
 }
 
 cleanup() {
+  [[ -n "$LOCK_CANDIDATE_FILE" ]] && rm -f -- "$LOCK_CANDIDATE_FILE" 2>/dev/null
   [[ -n "$PID_TEMP_FILE" ]] && rm -f -- "$PID_TEMP_FILE" 2>/dev/null
-  [[ -n "$CHILD_PID" ]] && terminate_child "$CHILD_PID"
+  if [[ -n "$CHILD_PID" ]]; then
+    terminate_child_group "$CHILD_PID"
+    remove_owned_pid_state
+  fi
   release_lock
 }
 
@@ -110,17 +175,43 @@ trap cleanup EXIT
 trap 'exit 1' INT TERM HUP
 
 clear_stale_lock() {
-  local stale_lock="${LOCK_DIR}.stale.$$"
+  local expected_record=$1 attempt=$2 stale_lock="${LOCK_FILE}.stale.$$.$2" moved_record=''
+  if [[ -e "$stale_lock" ]]; then
+    if [[ -d "$stale_lock" ]]; then
+      rm -f -- "$stale_lock/owner" 2>/dev/null
+      rmdir -- "$stale_lock" 2>/dev/null
+    else
+      rm -f -- "$stale_lock" 2>/dev/null
+    fi
+  fi
+  mv -- "$LOCK_FILE" "$stale_lock" 2>/dev/null || return 2
+
   if [[ -d "$stale_lock" ]]; then
+    if [[ "$expected_record" != '__legacy_directory__' ]]; then
+      show_error '无法清理过期的 TTcut 启动锁。'
+      return 1
+    fi
     rm -f -- "$stale_lock/owner" 2>/dev/null
     if ! rmdir -- "$stale_lock" 2>/dev/null; then
       show_error '无法清理过期的 TTcut 启动锁。'
       return 1
     fi
+    return 0
   fi
-  mv -- "$LOCK_DIR" "$stale_lock" 2>/dev/null || return 2
-  rm -f -- "$stale_lock/owner" 2>/dev/null
-  if ! rmdir -- "$stale_lock" 2>/dev/null; then
+
+  [[ -f "$stale_lock" ]] || return 1
+  moved_record=$(<"$stale_lock")
+  if [[ "$moved_record" != "$expected_record" ]]; then
+    if [[ ! -e "$LOCK_FILE" ]]; then
+      /bin/ln "$stale_lock" "$LOCK_FILE" 2>/dev/null || {
+        show_error '无法恢复 TTcut 启动锁。'
+        return 1
+      }
+    fi
+    rm -f -- "$stale_lock" 2>/dev/null
+    return 2
+  fi
+  if ! rm -f -- "$stale_lock" 2>/dev/null; then
     show_error '无法清理过期的 TTcut 启动锁。'
     return 1
   fi
@@ -128,14 +219,38 @@ clear_stale_lock() {
 }
 
 acquire_lock() {
-  local attempt=0 cleanup_status owner_check owner_pid='' owner_fingerprint='' self_fingerprint
+  local attempt=0 cleanup_status lock_record owner_pid='' owner_fingerprint='' self_fingerprint
   self_fingerprint=$(process_fingerprint "$$")
+  if [[ -z "$self_fingerprint" ]]; then
+    show_error '无法写入 TTcut 启动锁。'
+    return 1
+  fi
+  LOCK_OWNER_RECORD="$$"$'\t'"$self_fingerprint"
 
   while (( attempt < 3 )); do
-    if mkdir -- "$LOCK_DIR" 2>/dev/null; then
-      if [[ -z "$self_fingerprint" ]] || ! print -r -- "$$"$'\t'"$self_fingerprint" > "$LOCK_OWNER_FILE"; then
-        rm -f -- "$LOCK_OWNER_FILE" 2>/dev/null
-        rmdir -- "$LOCK_DIR" 2>/dev/null
+    (( attempt++ ))
+    LOCK_CANDIDATE_FILE="${LOCK_FILE}.candidate.$$.$attempt"
+    if ! { print -r -- "$LOCK_OWNER_RECORD" > "$LOCK_CANDIDATE_FILE"; } 2>/dev/null; then
+      show_error '无法写入 TTcut 启动锁。'
+      return 1
+    fi
+
+    if [[ -d "$LOCK_FILE" ]]; then
+      rm -f -- "$LOCK_CANDIDATE_FILE" 2>/dev/null
+      LOCK_CANDIDATE_FILE=''
+      clear_stale_lock '__legacy_directory__' "$attempt"
+      cleanup_status=$?
+      (( cleanup_status == 1 )) && return 1
+      (( cleanup_status == 2 )) && /bin/sleep 0.02
+      continue
+    fi
+
+    if /bin/ln "$LOCK_CANDIDATE_FILE" "$LOCK_FILE" 2>/dev/null; then
+      lock_record=''
+      [[ -f "$LOCK_FILE" ]] && lock_record=$(<"$LOCK_FILE")
+      rm -f -- "$LOCK_CANDIDATE_FILE" 2>/dev/null
+      LOCK_CANDIDATE_FILE=''
+      if [[ "$lock_record" != "$LOCK_OWNER_RECORD" ]]; then
         show_error '无法写入 TTcut 启动锁。'
         return 1
       fi
@@ -143,31 +258,42 @@ acquire_lock() {
       return 0
     fi
 
+    rm -f -- "$LOCK_CANDIDATE_FILE" 2>/dev/null
+    LOCK_CANDIDATE_FILE=''
+    if [[ ! -e "$LOCK_FILE" ]]; then
+      show_error '无法写入 TTcut 启动锁。'
+      return 1
+    fi
+
+    if [[ -d "$LOCK_FILE" ]]; then
+      clear_stale_lock '__legacy_directory__' "$attempt"
+      cleanup_status=$?
+      (( cleanup_status == 1 )) && return 1
+      (( cleanup_status == 2 )) && /bin/sleep 0.02
+      continue
+    fi
+
+    [[ -f "$LOCK_FILE" ]] || {
+      show_error '无法读取 TTcut 启动锁。'
+      return 1
+    }
+    lock_record=$(<"$LOCK_FILE")
     owner_pid=''
     owner_fingerprint=''
-    for owner_check in {1..5}; do
-      if [[ -r "$LOCK_OWNER_FILE" ]]; then
-        IFS=$'\t' read -r owner_pid owner_fingerprint < "$LOCK_OWNER_FILE"
-        break
-      fi
-      /bin/sleep 0.02
-    done
+    IFS=$'\t' read -r owner_pid owner_fingerprint <<< "$lock_record"
     if pid_matches_fingerprint "$owner_pid" "$owner_fingerprint"; then
       show_running 'TTcut 正在启动'
       return 2
     fi
 
-    clear_stale_lock
+    clear_stale_lock "$lock_record" "$attempt"
     cleanup_status=$?
-    if (( cleanup_status == 1 )); then
-      return 1
-    fi
-    (( attempt++ ))
+    (( cleanup_status == 1 )) && return 1
     (( cleanup_status == 2 )) && /bin/sleep 0.02
   done
 
-  show_running 'TTcut 正在启动'
-  return 2
+  show_error '无法获取 TTcut 启动锁。'
+  return 1
 }
 
 prepare_pid_path() {
@@ -185,6 +311,7 @@ prepare_pid_path() {
 write_pid_file() {
   local pid=$1 fingerprint=$2 expected_record observed_record temp_name
   expected_record="$pid"$'\t'"$fingerprint"
+  PID_OWNER_RECORD=$expected_record
   PID_TEMP_FILE="${PID_FILE}.tmp.$$"
   temp_name="${PID_TEMP_FILE:t}"
   if ! print -r -- "$expected_record" > "$PID_TEMP_FILE" 2>/dev/null; then
@@ -195,6 +322,7 @@ write_pid_file() {
   fi
   if [[ -d "$PID_FILE" ]]; then
     rm -f -- "$PID_FILE/$temp_name" 2>/dev/null
+    rmdir -- "$PID_FILE" 2>/dev/null
     return 1
   fi
   [[ -f "$PID_FILE" ]] || return 1
@@ -290,6 +418,8 @@ if [[ ! -x "$FFPROBE_PATH" ]]; then
   exit 1
 fi
 
+export PATH="${NPM_PATH:h}:${PYTHON_PATH:h}:$SAFE_PATH"
+
 acquire_lock
 typeset lock_status=$?
 if (( lock_status == 2 )); then
@@ -328,25 +458,27 @@ export TTCUT_TRACKNET_WEIGHTS="$WEIGHTS_PATH"
 export TTCUT_FFMPEG="$FFMPEG_PATH"
 export TTCUT_FFPROBE="$FFPROBE_PATH"
 
-nohup "$NPM_PATH" start </dev/null >> "$LOG_FILE" 2>&1 &
+readonly PYTHON_LAUNCH_SHIM='import os, sys
+os.setsid()
+os.chdir(sys.argv[1])
+os.execv(sys.argv[2], [sys.argv[2], "start"])'
+
+nohup "$PYTHON_PATH" -c "$PYTHON_LAUNCH_SHIM" "$PROJECT_DIR" "$NPM_PATH" </dev/null >> "$LOG_FILE" 2>&1 &
 CHILD_PID=$!
 typeset child_fingerprint
-child_fingerprint=$(process_fingerprint "$CHILD_PID")
-if [[ -z "$child_fingerprint" ]]; then
-  terminate_child "$CHILD_PID"
+if ! wait_for_private_process_group "$CHILD_PID"; then
+  terminate_child_group "$CHILD_PID"
   CHILD_PID=''
   show_error 'TTcut 启动失败，请查看日志。'
   exit 1
 fi
-if ! write_pid_file "$CHILD_PID" "$child_fingerprint"; then
-  terminate_child "$CHILD_PID"
+child_fingerprint=$(process_fingerprint "$CHILD_PID")
+if [[ -z "$child_fingerprint" ]]; then
+  terminate_child_group "$CHILD_PID"
   CHILD_PID=''
-  rm -f -- "$PID_FILE" "$PID_TEMP_FILE" 2>/dev/null
-  PID_TEMP_FILE=''
-  show_error '无法写入 TTcut 进程状态。'
+  show_error 'TTcut 启动失败，请查看日志。'
   exit 1
 fi
-log "已启动 TTcut npm 进程 (PID $CHILD_PID)。"
 
 typeset startup_wait="${TTCUT_LAUNCHER_STARTUP_WAIT:-1}"
 if [[ ! "$startup_wait" =~ '^[0-9]+([.][0-9]+)?$' ]]; then
@@ -355,13 +487,22 @@ fi
 /bin/sleep "$startup_wait"
 
 if ! pid_matches_fingerprint "$CHILD_PID" "$child_fingerprint"; then
-  terminate_child "$CHILD_PID"
+  terminate_child_group "$CHILD_PID"
   CHILD_PID=''
   rm -f -- "$PID_FILE" 2>/dev/null
   show_error 'TTcut 启动失败，请查看日志。'
   exit 1
 fi
 
+if ! write_pid_file "$CHILD_PID" "$child_fingerprint"; then
+  terminate_child_group "$CHILD_PID"
+  CHILD_PID=''
+  remove_owned_pid_state
+  show_error '无法写入 TTcut 进程状态。'
+  exit 1
+fi
+
+log "已启动 TTcut npm 进程 (PID $CHILD_PID)。"
 log "TTcut 启动检查通过 (PID $CHILD_PID)。"
 CHILD_PID=''
 release_lock
