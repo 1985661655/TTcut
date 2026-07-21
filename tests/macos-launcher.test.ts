@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 
 const launcher = join(process.cwd(), 'scripts/macos-launcher/launcher.zsh');
 const SAFE_PATH = '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin';
@@ -20,6 +20,7 @@ interface Fixture {
   weights: string;
   ffmpeg: string;
   ffprobe: string;
+  osascript: string;
   capture: string;
   npmCalls: string;
 }
@@ -53,6 +54,7 @@ function makeFixture(): Fixture {
     weights: join(root, 'TrackNet 权重.pt'),
     ffmpeg: join(bin, 'ffmpeg'),
     ffprobe: join(bin, 'ffprobe'),
+    osascript: join(bin, 'osascript'),
     capture: join(root, 'captured-env'),
     npmCalls: join(root, 'npm-calls'),
   };
@@ -76,14 +78,15 @@ while true; do zselect -t 6000; done
   executable(fixture.python);
   executable(fixture.ffmpeg);
   executable(fixture.ffprobe);
+  executable(fixture.osascript, `#!/bin/zsh
+root=\${\${0:h}:h}
+print -rl -- "$@" > "$root/osascript-args"
+/bin/cat > "$root/osascript-stdin"
+`);
   writeFileSync(fixture.weights, 'weights');
   writeConfig(fixture);
   fixtures.push(fixture);
   return fixture;
-}
-
-function quoteConfig(value: string): string {
-  return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
 function writeConfig(fixture: Fixture, overrides: Partial<Record<ConfigKey, string>> = {}): void {
@@ -96,40 +99,77 @@ function writeConfig(fixture: Fixture, overrides: Partial<Record<ConfigKey, stri
     FFPROBE_PATH: fixture.ffprobe,
     ...overrides,
   };
-  writeFileSync(fixture.config, `${Object.entries(config).map(([key, value]) => `${key}=${quoteConfig(value)}`).join('\n')}\n`);
+  writeFileSync(fixture.config, `${Object.entries(config).map(([key, value]) => `${key}=${value}`).join('\n')}\n`);
 }
 
 type ConfigKey = 'PROJECT_DIR' | 'NPM_PATH' | 'PYTHON_PATH' | 'WEIGHTS_PATH' | 'FFMPEG_PATH' | 'FFPROBE_PATH';
 
+function launcherEnv(fixture: Fixture, env: Record<string, string> = {}): NodeJS.ProcessEnv {
+  return {
+    ...process.env,
+    HOME: fixture.home,
+    TTCUT_LAUNCHER_CONFIG: fixture.config,
+    TTCUT_LAUNCHER_STATE_DIR: fixture.state,
+    TTCUT_LAUNCHER_LOG_DIR: fixture.logs,
+    TTCUT_LAUNCHER_NO_UI: '1',
+    TTCUT_LAUNCHER_STARTUP_WAIT: '0.2',
+    ...env,
+  };
+}
+
 function run(fixture: Fixture, env: Record<string, string> = {}) {
-  return spawnSync('/bin/zsh', [launcher], {
-    encoding: 'utf8',
-    env: {
-      ...process.env,
-      HOME: fixture.home,
-      TTCUT_LAUNCHER_CONFIG: fixture.config,
-      TTCUT_LAUNCHER_STATE_DIR: fixture.state,
-      TTCUT_LAUNCHER_LOG_DIR: fixture.logs,
-      TTCUT_LAUNCHER_NO_UI: '1',
-      TTCUT_LAUNCHER_STARTUP_WAIT: '1',
-      ...env,
-    },
-  });
+  return spawnSync('/bin/zsh', [launcher], { encoding: 'utf8', env: launcherEnv(fixture, env) });
+}
+
+function runAsync(fixture: Fixture, env: Record<string, string> = {}): Promise<{ status: number | null; stderr: string }> {
+  const child = spawn('/bin/zsh', [launcher], { env: launcherEnv(fixture, env), stdio: ['ignore', 'ignore', 'pipe'] });
+  let stderr = '';
+  child.stderr.setEncoding('utf8');
+  child.stderr.on('data', (chunk: string) => { stderr += chunk; });
+  return new Promise((resolve) => child.on('close', (status) => resolve({ status, stderr })));
+}
+
+function processState(pid: number): string {
+  return spawnSync('/bin/ps', ['-o', 'stat=', '-p', String(pid)], { encoding: 'utf8' }).stdout.trim();
+}
+
+function terminatePid(pid: number): void {
+  try {
+    process.kill(pid, 'SIGTERM');
+  } catch (error: unknown) {
+    if ((error as NodeJS.ErrnoException).code === 'ESRCH') return;
+    throw error;
+  }
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const state = processState(pid);
+    if (!state || state.startsWith('Z')) return;
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+  }
+  process.kill(pid, 'SIGKILL');
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const state = processState(pid);
+    if (!state || state.startsWith('Z')) return;
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+  }
+  throw new Error(`fake npm process ${pid} survived TERM and KILL`);
 }
 
 function cleanup(fixture: Fixture): void {
   const pidFile = join(fixture.state, 'launcher.pid');
-  if (existsSync(pidFile)) {
+  if (existsSync(pidFile) && statSync(pidFile).isFile()) {
     const pid = Number.parseInt(readFileSync(pidFile, 'utf8'), 10);
     if (Number.isInteger(pid) && pid > 0) {
-      try {
-        process.kill(pid, 'SIGTERM');
-      } catch (error: unknown) {
-        if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
-      }
+      terminatePid(pid);
     }
   }
   rmSync(fixture.root, { recursive: true, force: true });
+}
+
+async function terminateProcess(child: ChildProcess): Promise<void> {
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  const closed = new Promise<void>((resolve) => child.once('close', () => resolve()));
+  child.kill('SIGTERM');
+  await closed;
 }
 
 function expectNpmNotStarted(fixture: Fixture): void {
@@ -153,12 +193,34 @@ afterEach(() => {
 const macIt = process.platform === 'darwin' ? it : it.skip;
 
 describe('macOS launcher', () => {
-  it('opens an existing log through Finder and safely ignores a missing log', () => {
+  macIt('compiles the error dialog AppleScript', () => {
     const source = readFileSync(launcher, 'utf8');
+    const match = source.match(/<<'APPLESCRIPT'[^\n]*\n([\s\S]*?)\nAPPLESCRIPT/);
+    const compileRoot = mkdtempSync(join(tmpdir(), 'ttcut applescript '));
+    const output = join(compileRoot, 'launcher-dialog.scpt');
+    expect(match?.[1]).toBeTruthy();
+    try {
+      const result = spawnSync('/usr/bin/osacompile', ['-o', output, '-e', match?.[1] ?? ''], { encoding: 'utf8' });
+      expect(result.status, result.stderr).toBe(0);
+      expect(existsSync(output)).toBe(true);
+      expect(existsSync(join(process.cwd(), 'a.scpt'))).toBe(false);
+    } finally {
+      rmSync(compileRoot, { recursive: true, force: true });
+    }
+  });
 
-    expect(source).toContain('tell application "Finder" to open (POSIX file (item 2 of argv))');
-    expect(source).toContain('try\n      tell application "Finder" to open (POSIX file (item 2 of argv))\n    end try');
-    expect(source).not.toContain('do shell script "if [ -e ');
+  macIt('uses the injected osascript for an error dialog', async () => {
+    const fixture = makeFixture();
+    const result = run(fixture, {
+      TTCUT_LAUNCHER_CONFIG: join(fixture.root, 'missing.conf'),
+      TTCUT_LAUNCHER_NO_UI: '',
+      TTCUT_LAUNCHER_OSASCRIPT: fixture.osascript,
+    });
+
+    expect(result.status).toBe(1);
+    await waitForFiles([join(fixture.root, 'osascript-args'), join(fixture.root, 'osascript-stdin')], 'error osascript invocation');
+    expect(readFileSync(join(fixture.root, 'osascript-args'), 'utf8')).toContain('无法读取启动器配置文件');
+    expect(readFileSync(join(fixture.root, 'osascript-stdin'), 'utf8')).toContain('查看日志');
   });
 
   macIt('rejects an unreadable configuration before npm starts', () => {
@@ -167,6 +229,16 @@ describe('macOS launcher', () => {
 
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('无法读取启动器配置文件');
+    expectNpmNotStarted(fixture);
+  });
+
+  macIt('reports a malformed configuration only once', () => {
+    const fixture = makeFixture();
+    writeFileSync(fixture.config, 'not-an-assignment\n');
+    const result = run(fixture);
+
+    expect(result.status).toBe(1);
+    expect(result.stderr.match(/启动器配置格式无效。/g)).toHaveLength(1);
     expectNpmNotStarted(fixture);
   });
 
@@ -221,8 +293,21 @@ describe('macOS launcher', () => {
     expect(readFileSync(`${fixture.capture}.ffmpeg`, 'utf8').trim()).toBe(fixture.ffmpeg);
     expect(readFileSync(`${fixture.capture}.ffprobe`, 'utf8').trim()).toBe(fixture.ffprobe);
     expect(readFileSync(`${fixture.capture}.argv`, 'utf8')).toContain(' start');
-    expect(existsSync(join(fixture.state, 'launcher.pid'))).toBe(true);
+    const pidRecord = readFileSync(join(fixture.state, 'launcher.pid'), 'utf8').trim();
+    expect(pidRecord).toMatch(/^\d+\t.+$/);
     expect(readFileSync(join(fixture.logs, 'launcher.log'), 'utf8')).toContain('环境摘要');
+  });
+
+  macIt('accepts raw configuration paths containing O\'Brien, spaces, and Chinese characters', async () => {
+    const fixture = makeFixture();
+    const project = join(fixture.root, "O'Brien 项目 space");
+    mkdirSync(join(project, 'node_modules'), { recursive: true });
+    writeFileSync(join(project, 'package.json'), '{"name":"quote-path"}\n');
+    writeConfig(fixture, { PROJECT_DIR: project });
+
+    expect(run(fixture).status).toBe(0);
+    await waitForFiles([fixture.npmCalls], 'npm invocation with raw configuration path');
+    expect(readFileSync(fixture.config, 'utf8')).toContain(`PROJECT_DIR=${project}`);
   });
 
   macIt('does not start another npm process while the pid file is live', async () => {
@@ -232,6 +317,40 @@ describe('macOS launcher', () => {
     expect(run(fixture).status).toBe(0);
 
     expect(readFileSync(fixture.npmCalls, 'utf8').trim().split('\n')).toHaveLength(1);
+  });
+
+  macIt('serializes eight concurrent launchers to one npm process', async () => {
+    const fixture = makeFixture();
+    const results = await Promise.all(Array.from({ length: 8 }, () => runAsync(fixture, { TTCUT_LAUNCHER_STARTUP_WAIT: '0.4' })));
+
+    expect(results.map(({ status }) => status)).toEqual(Array(8).fill(0));
+    await waitForFiles([fixture.npmCalls], 'concurrent npm invocation');
+    expect(readFileSync(fixture.npmCalls, 'utf8').trim().split('\n')).toHaveLength(1);
+    expect(results.some(({ stderr }) => stderr.includes('TTcut 正在启动') || stderr.includes('TTcut 已经在运行'))).toBe(true);
+  });
+
+  macIt('removes a stale launcher lock and retries once', async () => {
+    const fixture = makeFixture();
+    const lockDir = join(fixture.state, 'launcher.lock');
+    mkdirSync(lockDir, { recursive: true });
+    writeFileSync(join(lockDir, 'owner'), '999999\tstale-fingerprint\n');
+
+    expect(run(fixture).status).toBe(0);
+    await waitForFiles([fixture.npmCalls], 'npm invocation after stale lock removal');
+    expect(existsSync(lockDir)).toBe(false);
+  });
+
+  macIt('uses the injected osascript for a duplicate-launch notification', async () => {
+    const fixture = makeFixture();
+    expect(run(fixture).status).toBe(0);
+    await waitForFiles([fixture.npmCalls], 'first npm invocation before duplicate UI');
+
+    expect(run(fixture, {
+      TTCUT_LAUNCHER_NO_UI: '',
+      TTCUT_LAUNCHER_OSASCRIPT: fixture.osascript,
+    }).status).toBe(0);
+    await waitForFiles([join(fixture.root, 'osascript-args')], 'duplicate osascript invocation');
+    expect(readFileSync(join(fixture.root, 'osascript-args'), 'utf8')).toContain('display notification "TTcut 已经在运行"');
   });
 
   macIt('removes a stale pid file and starts normally', async () => {
@@ -244,10 +363,36 @@ describe('macOS launcher', () => {
     expect(readFileSync(fixture.npmCalls, 'utf8').trim()).toBe('called');
   });
 
+  macIt('treats a live unrelated PID with the wrong fingerprint as stale', async () => {
+    const fixture = makeFixture();
+    const unrelated = spawn('/bin/sleep', ['30']);
+    try {
+      mkdirSync(fixture.state, { recursive: true });
+      writeFileSync(join(fixture.state, 'launcher.pid'), `${unrelated.pid}\tnot-the-process-fingerprint\n`);
+
+      expect(run(fixture).status).toBe(0);
+      await waitForFiles([fixture.npmCalls], 'npm invocation after fingerprint mismatch');
+      expect(readFileSync(fixture.npmCalls, 'utf8').trim()).toBe('called');
+    } finally {
+      await terminateProcess(unrelated);
+    }
+  });
+
+  macIt('refuses a PID path that is a directory before npm starts', () => {
+    const fixture = makeFixture();
+    mkdirSync(fixture.state, { recursive: true });
+    mkdirSync(join(fixture.state, 'launcher.pid'));
+
+    const result = run(fixture);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('无法写入 TTcut 进程状态');
+    expectNpmNotStarted(fixture);
+  });
+
   macIt('reports an npm process that exits during startup', () => {
     const fixture = makeFixture();
-    writeFileSync(join(fixture.root, 'exit-immediately'), '1');
-    const result = run(fixture);
+    writeConfig(fixture, { NPM_PATH: '/usr/bin/false' });
+    const result = run(fixture, { TTCUT_LAUNCHER_STARTUP_WAIT: '1' });
 
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('TTcut 启动失败');
