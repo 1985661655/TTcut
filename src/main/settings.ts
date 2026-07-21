@@ -2,12 +2,7 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { app } from 'electron';
 import { appSettingsSchema, type AppSettings } from '../shared/contracts';
-
-const defaults: AppSettings = {
-  language: 'zh-CN',
-  pre_roll_seconds: 2.5,
-  post_roll_seconds: 2,
-};
+import { defaultAppSettings, normalizeStoredSettings } from './settings-values';
 
 function settingsPath(): string {
   return path.join(app.getPath('userData'), 'settings.json');
@@ -16,9 +11,9 @@ function settingsPath(): string {
 export async function loadSettings(): Promise<AppSettings> {
   try {
     const raw = JSON.parse(await readFile(settingsPath(), 'utf8')) as unknown;
-    return appSettingsSchema.parse(raw);
+    return normalizeStoredSettings(raw);
   } catch {
-    return { ...defaults };
+    return defaultAppSettings();
   }
 }
 
@@ -31,4 +26,3 @@ export async function saveSettings(value: unknown): Promise<AppSettings> {
   await rename(temp, target);
   return settings;
 }
-

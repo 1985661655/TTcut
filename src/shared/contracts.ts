@@ -4,6 +4,7 @@ export const DEVICE_VALUES = ['auto', 'cuda', 'cpu'] as const;
 export const PRE_ROLL_VALUES = [1.5, 2.5, 5] as const;
 export const POST_ROLL_VALUES = [0.5, 1, 2, 4] as const;
 export const HIGHLIGHT_VALUES = [3, 5, 7] as const;
+export const INFERENCE_BATCH_VALUES = [4, 8, 12, 16] as const;
 
 const finiteNumber = z.number().finite();
 const point = z.tuple([finiteNumber, finiteNumber]);
@@ -121,10 +122,15 @@ export const cutSelectionSchema = z.discriminatedUnion('mode', [
   }).strict(),
 ]);
 
+export const inferenceBatchSizeSchema = z.union(
+  INFERENCE_BATCH_VALUES.map((value) => z.literal(value)),
+);
+
 export const appSettingsSchema = z.object({
   language: z.enum(['zh-CN', 'en']),
   pre_roll_seconds: z.union(PRE_ROLL_VALUES.map((value) => z.literal(value))),
   post_roll_seconds: z.union(POST_ROLL_VALUES.map((value) => z.literal(value))),
+  inference_batch_size: inferenceBatchSizeSchema,
 }).strict();
 
 export const historySourceSchema = z.object({
@@ -206,6 +212,7 @@ export type Rally = z.infer<typeof rallySchema>;
 export type AnalysisResultV1 = z.infer<typeof analysisResultSchema>;
 export type WorkerEventV1 = z.infer<typeof workerEventSchema>;
 export type CutSelectionV1 = z.infer<typeof cutSelectionSchema>;
+export type InferenceBatchSize = z.infer<typeof inferenceBatchSizeSchema>;
 export type AppSettings = z.infer<typeof appSettingsSchema>;
 export type HistorySource = z.infer<typeof historySourceSchema>;
 export type HistoryRecordV1 = z.infer<typeof historyRecordSchema>;
