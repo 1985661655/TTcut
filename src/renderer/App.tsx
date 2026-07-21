@@ -213,7 +213,7 @@ function RallyPreviewDialog({ video, videoDuration, rally, translations, onClose
 
 export function App() {
   const [bootstrap, setBootstrap] = useState<BootstrapData | null>(null);
-  const [settings, setSettings] = useState<AppSettings>({ language: 'zh-CN', pre_roll_seconds: 2.5, post_roll_seconds: 2 });
+  const [settings, setSettings] = useState<AppSettings>({ language: 'zh-CN', pre_roll_seconds: 2.5, post_roll_seconds: 2, inference_batch_size: 4 });
   const [view, setView] = useState<View>('auto');
   const [step, setStep] = useState<Step>('select');
   const [video, setVideo] = useState<SelectedVideo | null>(null);
@@ -350,7 +350,7 @@ export function App() {
     if (!video || !metadata || !calibrationValue || calibrationIssue || !platformSupported || !bootstrap?.components.analysis.available) return;
     setStep('analyzing'); setProgress({ percent: 0, stage: 'load_model' });
     try {
-      setActiveTask(await window.ttcut.startAnalysis({ videoPath: video.path, calibration: calibrationValue, device: 'auto' }));
+      setActiveTask(await window.ttcut.startAnalysis({ videoPath: video.path, calibration: calibrationValue, device: 'auto', batchSize: settings.inference_batch_size }));
     } catch (caught) {
       setError({ code: errorCode(caught) }); setStep('error');
     }
@@ -382,7 +382,7 @@ export function App() {
     setLanguageTransition(false);
   };
 
-  const saveRolls = async (partial: Partial<AppSettings>) => {
+  const saveSettingsPartial = async (partial: Partial<AppSettings>) => {
     const next = await window.ttcut.saveSettings({ ...settings, ...partial });
     setSettings(next);
   };
@@ -534,13 +534,17 @@ export function App() {
                 <div><h2>{t.platformCompatibility}</h2><p>{platformDetail}</p></div>
                 <span className={`status ${platformSupported ? 'ok' : 'blocked'}`}>{platformSupported ? t.platformSupported : t.platformUnsupported}</span>
               </article>
+              <article className="card timing-setting-card batch-setting-card">
+                <div><h2>{t.inferenceBatch}</h2><p>{t.inferenceBatchDetail}</p></div>
+                <div className="choice-row four">{([4, 8, 12, 16] as const).map((value, index) => <button className={settings.inference_batch_size === value ? 'selected' : ''} key={value} onClick={() => void saveSettingsPartial({ inference_batch_size: value })}><strong>{[t.batchLowMemory, t.batchBalanced, t.batchFaster, t.batchMaximum][index]}</strong><span>{value}</span></button>)}</div>
+              </article>
               <article className="card timing-setting-card">
                 <div><h2>{t.preRoll}</h2><p>{t.preRollSettingDetail}</p></div>
-                <div className="choice-row">{([1.5, 2.5, 5] as const).map((value, index) => <button className={settings.pre_roll_seconds === value ? 'selected' : ''} key={value} onClick={() => void saveRolls({ pre_roll_seconds: value })}><strong>{[t.short, t.medium, t.long][index]}</strong><span>{value} s</span></button>)}</div>
+                <div className="choice-row">{([1.5, 2.5, 5] as const).map((value, index) => <button className={settings.pre_roll_seconds === value ? 'selected' : ''} key={value} onClick={() => void saveSettingsPartial({ pre_roll_seconds: value })}><strong>{[t.short, t.medium, t.long][index]}</strong><span>{value} s</span></button>)}</div>
               </article>
               <article className="card timing-setting-card">
                 <div><h2>{t.postRoll}</h2><p>{t.postRollSettingDetail}</p></div>
-                <div className="choice-row four">{([0.5, 1, 2, 4] as const).map((value, index) => <button className={settings.post_roll_seconds === value ? 'selected' : ''} key={value} onClick={() => void saveRolls({ post_roll_seconds: value })}><strong>{[t.veryShort, t.short, t.medium, t.long][index]}</strong><span>{value} s</span></button>)}</div>
+                <div className="choice-row four">{([0.5, 1, 2, 4] as const).map((value, index) => <button className={settings.post_roll_seconds === value ? 'selected' : ''} key={value} onClick={() => void saveSettingsPartial({ post_roll_seconds: value })}><strong>{[t.veryShort, t.short, t.medium, t.long][index]}</strong><span>{value} s</span></button>)}</div>
               </article>
               <article className="card components-card">
                 <h2>{t.components}</h2>
