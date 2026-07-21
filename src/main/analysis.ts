@@ -7,6 +7,7 @@ import {
   workerEventSchema,
   type AnalysisResultV1,
   type Calibration,
+  type InferenceBatchSize,
   type WorkerEventV1,
 } from '../shared/contracts';
 import type { AppEvent } from '../shared/api';
@@ -38,7 +39,12 @@ export function activateLatestAnalysis(value: AnalysisResultV1): AnalysisResultV
 
 export async function startAnalysis(
   window: BrowserWindow,
-  value: { videoPath: string; calibration: Calibration; device: 'auto' | 'cuda' | 'cpu' },
+  value: {
+    videoPath: string;
+    calibration: Calibration;
+    device: 'auto' | 'cuda' | 'cpu';
+    batchSize: InferenceBatchSize;
+  },
 ): Promise<string> {
   if (hasActiveTasks()) throw new Error('TASK_BUSY');
   const components = await resolveUsableAnalysisComponents(value.device);
@@ -54,6 +60,7 @@ export async function startAnalysis(
     video_path: metadata.path,
     device: value.device,
     calibration: value.calibration,
+    batch_size: value.batchSize,
   });
   const child = spawnTracked(taskId, components.python, ['-m', 'ttcut_worker.worker'], {
     cwd: components.worker,

@@ -9,6 +9,10 @@ export const INFERENCE_BATCH_VALUES = [4, 8, 12, 16] as const;
 const finiteNumber = z.number().finite();
 const point = z.tuple([finiteNumber, finiteNumber]);
 
+export const inferenceBatchSizeSchema = z.union(
+  INFERENCE_BATCH_VALUES.map((value) => z.literal(value)),
+);
+
 export const calibrationSchema = z.object({
   video_width: z.number().int().positive(),
   video_height: z.number().int().positive(),
@@ -26,6 +30,7 @@ export const analysisRequestSchema = z.object({
   video_path: z.string().min(1),
   device: z.enum(DEVICE_VALUES),
   calibration: calibrationSchema,
+  batch_size: inferenceBatchSizeSchema,
 }).strict();
 
 export const videoMetadataSchema = z.object({
@@ -121,10 +126,6 @@ export const cutSelectionSchema = z.discriminatedUnion('mode', [
     post_roll_seconds: z.union(POST_ROLL_VALUES.map((value) => z.literal(value))),
   }).strict(),
 ]);
-
-export const inferenceBatchSizeSchema = z.union(
-  INFERENCE_BATCH_VALUES.map((value) => z.literal(value)),
-);
 
 export const appSettingsSchema = z.object({
   language: z.enum(['zh-CN', 'en']),

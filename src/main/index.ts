@@ -8,7 +8,14 @@ import {
   protocol,
   shell,
 } from 'electron';
-import { analysisResultSchema, appSettingsSchema, calibrationSchema, cutSelectionSchema, historySummarySchema } from '../shared/contracts';
+import {
+  analysisResultSchema,
+  appSettingsSchema,
+  calibrationSchema,
+  cutSelectionSchema,
+  historySummarySchema,
+  inferenceBatchSizeSchema,
+} from '../shared/contracts';
 import { IPC } from '../shared/ipc';
 import { activateLatestAnalysis, startAnalysis, clearLatestAnalysis } from './analysis';
 import { componentSetupInfo, loadComponentCatalog } from './component-catalog';
@@ -125,6 +132,7 @@ function registerIpc(): void {
       videoPath: record.videoPath,
       calibration: calibrationSchema.parse(record.calibration),
       device,
+      batchSize: inferenceBatchSizeSchema.parse(record.batchSize),
     });
   });
   ipcMain.handle(IPC.exportStart, async (_event, value: unknown) => {

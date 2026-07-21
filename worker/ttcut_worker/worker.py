@@ -22,13 +22,15 @@ def emit(payload: dict) -> None:
 
 
 def validate_request(value: object) -> dict:
-    expected_fields = {"schema_version", "task_id", "video_path", "device", "calibration"}
+    expected_fields = {"schema_version", "task_id", "video_path", "device", "calibration", "batch_size"}
     if not isinstance(value, dict) or set(value) != expected_fields or value.get("schema_version") != 1:
         raise InvalidRequestError("Unsupported analysis request schema.")
     try:
         uuid.UUID(str(value["task_id"]))
         if value["device"] not in {"auto", "cuda", "cpu"}:
             raise ValueError("device")
+        if not isinstance(value["batch_size"], int) or isinstance(value["batch_size"], bool) or value["batch_size"] not in {4, 8, 12, 16}:
+            raise ValueError("batch_size")
         if not isinstance(value["video_path"], str) or Path(value["video_path"]).suffix.lower() != ".mp4":
             raise ValueError("video_path")
         calibration = value["calibration"]
@@ -68,7 +70,9 @@ def analyze(request: dict) -> dict:
             "current": current, "total": total, "percent": round(percent, 4),
         })
 
-    points, info, _stats = TrackNetPredictor(loaded).predict(request["video_path"], progress_callback=progress)
+    points, info, _stats = TrackNetPredictor(loaded, batch_size=request["batch_size"]).predict(
+        request["video_path"], progress_callback=progress,
+    )
     emit({"type": "progress", "task_id": task_id, "stage": "postprocess", "current": 0, "total": 1, "percent": 0.0})
     bounce_frames = detect_bounce_frames(points, calibration)
     rallies = group_rallies(bounce_frames, points)
