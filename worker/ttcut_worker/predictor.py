@@ -23,6 +23,17 @@ class _AcceleratorOutOfMemory(RuntimeError):
     pass
 
 
+def _device_type(device: object) -> str:
+    return str(getattr(device, "type", device)).split(":", 1)[0]
+
+
+def _is_memory_error(exc: Exception, device_type: str) -> bool:
+    message = str(exc).lower()
+    return "out of memory" in message or (
+        device_type == "mps" and "invalid buffer size" in message
+    )
+
+
 @dataclass(frozen=True)
 class PredictionStats:
     detected_frames: int
@@ -148,7 +159,7 @@ class TrackNetPredictor:
                 heatmaps = self.loaded.model(tensor)
                 heatmaps = heatmaps.detach().cpu().numpy()
         except Exception as exc:
-            if "out of memory" not in str(exc).lower():
+            if not _is_memory_error(exc, _device_type(self.loaded.device)):
                 raise
             tensor = None
             heatmaps = None
@@ -215,8 +226,7 @@ class TrackNetPredictor:
         return output
 
     def _clear_accelerator_cache(self) -> None:
-        device = getattr(self.loaded.device, "type", str(self.loaded.device))
-        device_type = str(device).split(":", 1)[0]
+        device_type = _device_type(self.loaded.device)
         if device_type not in {"cuda", "mps"}:
             return
         torch = import_torch()
