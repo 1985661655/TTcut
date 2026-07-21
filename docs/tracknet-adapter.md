@@ -20,10 +20,15 @@ Release staging 和审计会拒绝测试、缓存、`.pt/.pth` 权重以及 Inpa
 
 - 模型输入为 512×288，按 checkpoint 的 `seq_len` 和 `bg_mode` 建立网络。
 - 权重通过 `model.load_state_dict(..., strict=True)` 加载。
-- 默认批量为 4 个序列；每个真实解码帧必须得到一个轨迹点。
+- Windows 和其他平台默认批量为 4 个序列，Apple Silicon 默认批量为 8 个序列；设置中可选 4、8、12 或 16。每个真实解码帧必须得到一个轨迹点。
 - 轨迹点来源只允许 `tracknet` 或 `missing`。
-- CUDA 显存不足转换为可恢复的设备错误；`auto` 在 CUDA 可用时选 CUDA，否则选 CPU。
+- MPS、CUDA 及其他明确报告 OOM 的推理错误会使运行批量动态减半，最小降至 1；MPS/CUDA 同时清理可用的设备缓存，Batch 1 仍失败时转换为设备错误。
+- `auto` 的设备选择顺序为 CUDA、MPS、CPU。
 - stdout 只写协议 JSONL；traceback 和底层诊断只写 stderr。
+
+## Apple Silicon Batch 基准
+
+同一段 67,368 帧视频在 M4 16GB 上全量推理：Batch 4 用时 801.1326 秒（84.0909 FPS），Batch 8 用时 806.7435 秒（83.5061 FPS）。两次轨迹 hash 一致，Batch 8 慢 0.70%。这说明该视频的瓶颈不在 Batch，不能据此承诺提高 Batch 会提速。
 
 ## 弹跳和回合
 
