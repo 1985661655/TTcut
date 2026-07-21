@@ -113,6 +113,21 @@ source scripts/dev-macos-env.example.zsh
 npm start
 ```
 
+Apple Silicon macOS 还提供本机一键启动器，仅供本机开发使用：
+
+```zsh
+npm run install:macos-launcher
+open /Applications/TTcut.app
+```
+
+启动器依赖当前 checkout、`.venv312`、`~/Downloads/TrackNet_best.pt` 和 Homebrew FFmpeg；后台启动不会弹出终端。日志写入 `~/Library/Logs/TTcut/launcher.log`。更新代码或路径后，请重新运行 `npm run install:macos-launcher`。删除启动器可使用：
+
+```zsh
+rm -rf /Applications/TTcut.app
+```
+
+如需自定义路径，可设置 `TTCUT_PROJECT_DIR`、`TTCUT_PYTHON_PATH`、`TTCUT_WEIGHTS_PATH`、`TTCUT_FFMPEG_PATH`、`TTCUT_FFPROBE_PATH`、`TTCUT_NPM_PATH` 或 `TTCUT_APP_DESTINATION`。
+
 Mac 开发版会优先读取 `TTCUT_PYTHON`、`TTCUT_TRACKNET_WEIGHTS`、`TTCUT_FFMPEG` 和 `TTCUT_FFPROBE`。如果没有设置 FFmpeg 变量，会尝试 Apple Silicon Homebrew 的 `/opt/homebrew/bin/ffmpeg` 和 `/opt/homebrew/bin/ffprobe`。
 
 验证与构建：
