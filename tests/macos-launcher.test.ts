@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
@@ -68,6 +68,7 @@ print -r -- "$TTCUT_PYTHON" > "$root/captured-env.python"
 print -r -- "$TTCUT_TRACKNET_WEIGHTS" > "$root/captured-env.weights"
 print -r -- "$TTCUT_FFMPEG" > "$root/captured-env.ffmpeg"
 print -r -- "$TTCUT_FFPROBE" > "$root/captured-env.ffprobe"
+print -r -- "$TTCUT_LAUNCHER_LOCKED" > "$root/captured-env.locked"
 print -r -- "$0 $*" > "$root/captured-env.argv"
 print -r -- called >> "$root/npm-calls"
 if [[ -f "$root/force-pid-write-failure" ]]; then
@@ -124,6 +125,7 @@ function launcherEnv(fixture: Fixture, env: Record<string, string> = {}): NodeJS
     TTCUT_LAUNCHER_STATE_DIR: fixture.state,
     TTCUT_LAUNCHER_LOG_DIR: fixture.logs,
     TTCUT_LAUNCHER_NO_UI: '1',
+    TTCUT_LAUNCHER_LOCKED: '',
     TTCUT_LAUNCHER_STARTUP_WAIT: '0.2',
     ...env,
   };
@@ -146,7 +148,7 @@ function processState(pid: number): string {
 }
 
 function processFingerprint(pid: number): string {
-  return spawnSync('/bin/ps', ['-o', 'lstart=', '-p', String(pid)], { encoding: 'utf8' }).stdout.trim();
+  return spawnSync('/bin/ps', ['-o', 'lstart=', '-p', String(pid)], { encoding: 'utf8' }).stdout.replace(/\n$/, '');
 }
 
 function terminatePid(pid: number): void {
@@ -189,9 +191,19 @@ function cleanup(fixture: Fixture): void {
 
 async function terminateProcess(child: ChildProcess): Promise<void> {
   if (child.exitCode !== null || child.signalCode !== null) return;
-  const closed = new Promise<void>((resolve) => child.once('close', () => resolve()));
   child.kill('SIGTERM');
-  await closed;
+  try {
+    await waitForCondition(
+      () => child.exitCode !== null || child.signalCode !== null,
+      'test child process cleanup',
+    );
+  } catch {
+    child.kill('SIGKILL');
+    await waitForCondition(
+      () => child.exitCode !== null || child.signalCode !== null,
+      'test child process KILL cleanup',
+    );
+  }
 }
 
 function expectNpmNotStarted(fixture: Fixture): void {
@@ -315,6 +327,7 @@ describe('macOS launcher', () => {
       `${fixture.capture}.weights`,
       `${fixture.capture}.ffmpeg`,
       `${fixture.capture}.ffprobe`,
+      `${fixture.capture}.locked`,
       `${fixture.capture}.argv`,
       fixture.npmCalls,
     ], 'npm environment capture');
@@ -323,13 +336,13 @@ describe('macOS launcher', () => {
     expect(readFileSync(`${fixture.capture}.weights`, 'utf8').trim()).toBe(fixture.weights);
     expect(readFileSync(`${fixture.capture}.ffmpeg`, 'utf8').trim()).toBe(fixture.ffmpeg);
     expect(readFileSync(`${fixture.capture}.ffprobe`, 'utf8').trim()).toBe(fixture.ffprobe);
+    expect(readFileSync(`${fixture.capture}.locked`, 'utf8').trim()).toBe('1');
     expect(readFileSync(`${fixture.capture}.argv`, 'utf8')).toContain(' start');
     const pidRecord = readFileSync(join(fixture.state, 'launcher.pid'), 'utf8').trim();
     expect(pidRecord).toMatch(/^\d+\t.+$/);
     const npmPid = Number.parseInt(pidRecord, 10);
     const npmPgid = spawnSync('/bin/ps', ['-o', 'pgid=', '-p', String(npmPid)], { encoding: 'utf8' }).stdout.trim();
     expect(npmPgid).toBe(String(npmPid));
-    expect(readdirSync(fixture.state).filter((name) => name.includes('candidate') || name.includes('stale'))).toEqual([]);
     expect(readFileSync(join(fixture.logs, 'launcher.log'), 'utf8')).toContain('环境摘要');
   });
 
@@ -354,45 +367,60 @@ describe('macOS launcher', () => {
     expect(readFileSync(fixture.npmCalls, 'utf8').trim().split('\n')).toHaveLength(1);
   });
 
-  macIt('serializes eight concurrent launchers to one npm process', async () => {
+  macIt('serializes sixteen concurrent launchers with a pre-existing regular lock file', async () => {
     const fixture = makeFixture();
-    const results = await Promise.all(Array.from({ length: 8 }, () => runAsync(fixture, { TTCUT_LAUNCHER_STARTUP_WAIT: '0.4' })));
+    mkdirSync(fixture.state, { recursive: true });
+    const lockFile = join(fixture.state, 'launcher.lock');
+    writeFileSync(lockFile, 'opaque lockf file contents\n');
+    const results = await Promise.all(Array.from({ length: 16 }, () => runAsync(fixture, { TTCUT_LAUNCHER_STARTUP_WAIT: '0.4' })));
 
-    expect(results.map(({ status }) => status)).toEqual(Array(8).fill(0));
+    expect(results.map(({ status }) => status)).toEqual(Array(16).fill(0));
     await waitForFiles([fixture.npmCalls], 'concurrent npm invocation');
     expect(readFileSync(fixture.npmCalls, 'utf8').trim().split('\n')).toHaveLength(1);
+    expect(readFileSync(lockFile, 'utf8')).toBe('opaque lockf file contents\n');
     expect(results.some(({ stderr }) => stderr.includes('TTcut 正在启动') || stderr.includes('TTcut 已经在运行'))).toBe(true);
   });
 
-  macIt('ignores a complete unpublished candidate owned by a live process', async () => {
+  macIt('does not start npm while another native lockf process holds the lock', async () => {
     const fixture = makeFixture();
     mkdirSync(fixture.state, { recursive: true });
-    const candidate = join(fixture.state, 'launcher.lock.candidate.unpublished');
-    writeFileSync(candidate, `${process.pid}\t${processFingerprint(process.pid)}\n`);
-
-    expect(run(fixture).status).toBe(0);
-    await waitForFiles([fixture.npmCalls], 'npm invocation with an unpublished candidate');
-    expect(readFileSync(candidate, 'utf8').trim()).toContain(`${process.pid}\t`);
+    const lockFile = join(fixture.state, 'launcher.lock');
+    const holderReady = join(fixture.root, 'lockf-holder-ready');
+    const holder = spawn(
+      '/usr/bin/lockf',
+      [
+        '-s', '-k', lockFile,
+        '/bin/zsh', '-c', 'print -r -- "$$" > "$1"; exec /bin/sleep 30',
+        'lockf-holder', holderReady,
+      ],
+      { stdio: 'ignore' },
+    );
+    try {
+      await waitForFiles([holderReady], 'external lockf acquisition');
+      expect(spawnSync('/usr/bin/lockf', ['-s', '-t', '0', '-k', lockFile, '/usr/bin/true']).status).toBe(75);
+      const result = run(fixture);
+      expect(result.status).toBe(0);
+      expect(result.stderr).toContain('TTcut 正在启动');
+      expectNpmNotStarted(fixture);
+    } finally {
+      if (existsSync(holderReady)) {
+        const holderChildPid = Number.parseInt(readFileSync(holderReady, 'utf8'), 10);
+        if (Number.isInteger(holderChildPid) && holderChildPid > 0 && processState(holderChildPid)) {
+          terminatePid(holderChildPid);
+        }
+      }
+      await terminateProcess(holder);
+    }
   });
 
-  macIt('recovers an incomplete canonical lock record', async () => {
-    const fixture = makeFixture();
-    mkdirSync(fixture.state, { recursive: true });
-    writeFileSync(join(fixture.state, 'launcher.lock'), 'partial');
-
-    expect(run(fixture).status).toBe(0);
-    await waitForFiles([fixture.npmCalls], 'npm invocation after incomplete lock recovery');
-    expect(readFileSync(fixture.npmCalls, 'utf8').trim()).toBe('called');
-  });
-
-  macIt('returns an error when the state directory cannot publish a lock', () => {
+  macIt('returns an error when lockf cannot create the lock file', () => {
     const fixture = makeFixture();
     mkdirSync(fixture.state, { recursive: true });
     chmodSync(fixture.state, 0o555);
     try {
       const result = run(fixture);
       expect(result.status).toBe(1);
-      expect(result.stderr).toContain('无法写入 TTcut 启动锁');
+      expect(result.stderr).toContain('无法获取 TTcut 启动锁');
       expect(result.stderr).not.toContain('TTcut 正在启动');
       expectNpmNotStarted(fixture);
     } finally {
@@ -400,33 +428,26 @@ describe('macOS launcher', () => {
     }
   });
 
-  macIt('does not remove a lock whose published owner record changed', async () => {
+  macIt('keeps a live legacy directory lock and does not start npm', async () => {
     const fixture = makeFixture();
-    const lockFile = join(fixture.state, 'launcher.lock');
-    const launch = runAsync(fixture, { TTCUT_LAUNCHER_STARTUP_WAIT: '0.6' });
+    const owner = spawn('/bin/sleep', ['30']);
     try {
-      await waitForCondition(() => existsSync(lockFile) && statSync(lockFile).isFile(), 'published launcher lock');
-      writeFileSync(lockFile, '999999\tforeign-owner\n');
+      await waitForCondition(() => processState(owner.pid ?? -1) !== '', 'legacy lock owner startup');
+      const lockDir = join(fixture.state, 'launcher.lock');
+      mkdirSync(lockDir, { recursive: true });
+      writeFileSync(join(lockDir, 'owner'), `${owner.pid}\t${processFingerprint(owner.pid ?? -1)}\n`);
+
+      const result = run(fixture);
+      expect(result.status).toBe(0);
+      expect(result.stderr).toContain('TTcut 正在启动');
+      expectNpmNotStarted(fixture);
+      expect(statSync(lockDir).isDirectory()).toBe(true);
     } finally {
-      await launch;
+      await terminateProcess(owner);
     }
-
-    expect((await launch).status).toBe(0);
-    expect(readFileSync(lockFile, 'utf8').trim()).toBe('999999\tforeign-owner');
   });
 
-  macIt('removes a stale launcher lock and retries once', async () => {
-    const fixture = makeFixture();
-    const lockFile = join(fixture.state, 'launcher.lock');
-    mkdirSync(fixture.state, { recursive: true });
-    writeFileSync(lockFile, '999999\tstale-fingerprint\n');
-
-    expect(run(fixture).status).toBe(0);
-    await waitForFiles([fixture.npmCalls], 'npm invocation after stale lock removal');
-    expect(existsSync(lockFile)).toBe(false);
-  });
-
-  macIt('cleans up a legacy directory lock', async () => {
+  macIt('cleans up a stale legacy directory lock before using lockf', async () => {
     const fixture = makeFixture();
     const lockDir = join(fixture.state, 'launcher.lock');
     mkdirSync(lockDir, { recursive: true });
@@ -434,7 +455,7 @@ describe('macOS launcher', () => {
 
     expect(run(fixture).status).toBe(0);
     await waitForFiles([fixture.npmCalls], 'npm invocation after legacy lock cleanup');
-    expect(existsSync(lockDir)).toBe(false);
+    expect(statSync(lockDir).isFile()).toBe(true);
   });
 
   macIt('uses the injected osascript for a duplicate-launch notification', async () => {

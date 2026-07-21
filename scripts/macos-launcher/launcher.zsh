@@ -16,9 +16,6 @@ readonly LOCK_FILE="${STATE_DIR}/launcher.lock"
 readonly OSASCRIPT_PATH="${TTCUT_LAUNCHER_OSASCRIPT:-/usr/bin/osascript}"
 readonly MAX_LOG_BYTES=$((5 * 1024 * 1024))
 
-typeset LOCK_HELD=0
-typeset LOCK_OWNER_RECORD=''
-typeset LOCK_CANDIDATE_FILE=''
 typeset CHILD_PID=''
 typeset CHILD_PGID=''
 typeset PID_TEMP_FILE=''
@@ -74,18 +71,6 @@ pid_matches_fingerprint() {
   is_live_pid "$pid" || return 1
   actual=$(process_fingerprint "$pid")
   [[ -n "$actual" && "$actual" == "$expected" ]]
-}
-
-release_lock() {
-  [[ "$LOCK_HELD" == 1 ]] || return 0
-  local published_record=''
-  if [[ -f "$LOCK_FILE" ]]; then
-    published_record=$(<"$LOCK_FILE")
-  fi
-  if [[ -n "$LOCK_OWNER_RECORD" && "$published_record" == "$LOCK_OWNER_RECORD" ]]; then
-    rm -f -- "$LOCK_FILE" 2>/dev/null
-  fi
-  LOCK_HELD=0
 }
 
 process_group_id() {
@@ -162,138 +147,38 @@ remove_owned_pid_state() {
 }
 
 cleanup() {
-  [[ -n "$LOCK_CANDIDATE_FILE" ]] && rm -f -- "$LOCK_CANDIDATE_FILE" 2>/dev/null
   [[ -n "$PID_TEMP_FILE" ]] && rm -f -- "$PID_TEMP_FILE" 2>/dev/null
   if [[ -n "$CHILD_PID" ]]; then
     terminate_child_group "$CHILD_PID"
     remove_owned_pid_state
   fi
-  release_lock
 }
 
 trap cleanup EXIT
 trap 'exit 1' INT TERM HUP
 
-clear_stale_lock() {
-  local expected_record=$1 attempt=$2 stale_lock="${LOCK_FILE}.stale.$$.$2" moved_record=''
-  if [[ -e "$stale_lock" ]]; then
-    if [[ -d "$stale_lock" ]]; then
-      rm -f -- "$stale_lock/owner" 2>/dev/null
-      rmdir -- "$stale_lock" 2>/dev/null
-    else
-      rm -f -- "$stale_lock" 2>/dev/null
-    fi
-  fi
-  mv -- "$LOCK_FILE" "$stale_lock" 2>/dev/null || return 2
+prepare_legacy_lock() {
+  [[ -d "$LOCK_FILE" ]] || return 0
 
-  if [[ -d "$stale_lock" ]]; then
-    if [[ "$expected_record" != '__legacy_directory__' ]]; then
-      show_error '无法清理过期的 TTcut 启动锁。'
-      return 1
-    fi
-    rm -f -- "$stale_lock/owner" 2>/dev/null
-    if ! rmdir -- "$stale_lock" 2>/dev/null; then
-      show_error '无法清理过期的 TTcut 启动锁。'
-      return 1
-    fi
-    return 0
+  local owner_file="$LOCK_FILE/owner" owner_pid='' owner_fingerprint=''
+  if [[ -r "$owner_file" ]]; then
+    IFS=$'\t' read -r owner_pid owner_fingerprint < "$owner_file"
   fi
-
-  [[ -f "$stale_lock" ]] || return 1
-  moved_record=$(<"$stale_lock")
-  if [[ "$moved_record" != "$expected_record" ]]; then
-    if [[ ! -e "$LOCK_FILE" ]]; then
-      /bin/ln "$stale_lock" "$LOCK_FILE" 2>/dev/null || {
-        show_error '无法恢复 TTcut 启动锁。'
-        return 1
-      }
-    fi
-    rm -f -- "$stale_lock" 2>/dev/null
+  if pid_matches_fingerprint "$owner_pid" "$owner_fingerprint"; then
+    show_running 'TTcut 正在启动'
     return 2
   fi
-  if ! rm -f -- "$stale_lock" 2>/dev/null; then
+
+  if [[ -e "$owner_file" ]] && ! rm -f -- "$owner_file" 2>/dev/null; then
     show_error '无法清理过期的 TTcut 启动锁。'
     return 1
   fi
-  return 0
-}
-
-acquire_lock() {
-  local attempt=0 cleanup_status lock_record owner_pid='' owner_fingerprint='' self_fingerprint
-  self_fingerprint=$(process_fingerprint "$$")
-  if [[ -z "$self_fingerprint" ]]; then
-    show_error '无法写入 TTcut 启动锁。'
+  if ! rmdir -- "$LOCK_FILE" 2>/dev/null && [[ -d "$LOCK_FILE" ]]; then
+    show_error '无法清理过期的 TTcut 启动锁。'
     return 1
   fi
-  LOCK_OWNER_RECORD="$$"$'\t'"$self_fingerprint"
-
-  while (( attempt < 3 )); do
-    (( attempt++ ))
-    LOCK_CANDIDATE_FILE="${LOCK_FILE}.candidate.$$.$attempt"
-    if ! { print -r -- "$LOCK_OWNER_RECORD" > "$LOCK_CANDIDATE_FILE"; } 2>/dev/null; then
-      show_error '无法写入 TTcut 启动锁。'
-      return 1
-    fi
-
-    if [[ -d "$LOCK_FILE" ]]; then
-      rm -f -- "$LOCK_CANDIDATE_FILE" 2>/dev/null
-      LOCK_CANDIDATE_FILE=''
-      clear_stale_lock '__legacy_directory__' "$attempt"
-      cleanup_status=$?
-      (( cleanup_status == 1 )) && return 1
-      (( cleanup_status == 2 )) && /bin/sleep 0.02
-      continue
-    fi
-
-    if /bin/ln "$LOCK_CANDIDATE_FILE" "$LOCK_FILE" 2>/dev/null; then
-      lock_record=''
-      [[ -f "$LOCK_FILE" ]] && lock_record=$(<"$LOCK_FILE")
-      rm -f -- "$LOCK_CANDIDATE_FILE" 2>/dev/null
-      LOCK_CANDIDATE_FILE=''
-      if [[ "$lock_record" != "$LOCK_OWNER_RECORD" ]]; then
-        show_error '无法写入 TTcut 启动锁。'
-        return 1
-      fi
-      LOCK_HELD=1
-      return 0
-    fi
-
-    rm -f -- "$LOCK_CANDIDATE_FILE" 2>/dev/null
-    LOCK_CANDIDATE_FILE=''
-    if [[ ! -e "$LOCK_FILE" ]]; then
-      show_error '无法写入 TTcut 启动锁。'
-      return 1
-    fi
-
-    if [[ -d "$LOCK_FILE" ]]; then
-      clear_stale_lock '__legacy_directory__' "$attempt"
-      cleanup_status=$?
-      (( cleanup_status == 1 )) && return 1
-      (( cleanup_status == 2 )) && /bin/sleep 0.02
-      continue
-    fi
-
-    [[ -f "$LOCK_FILE" ]] || {
-      show_error '无法读取 TTcut 启动锁。'
-      return 1
-    }
-    lock_record=$(<"$LOCK_FILE")
-    owner_pid=''
-    owner_fingerprint=''
-    IFS=$'\t' read -r owner_pid owner_fingerprint <<< "$lock_record"
-    if pid_matches_fingerprint "$owner_pid" "$owner_fingerprint"; then
-      show_running 'TTcut 正在启动'
-      return 2
-    fi
-
-    clear_stale_lock "$lock_record" "$attempt"
-    cleanup_status=$?
-    (( cleanup_status == 1 )) && return 1
-    (( cleanup_status == 2 )) && /bin/sleep 0.02
-  done
-
-  show_error '无法获取 TTcut 启动锁。'
-  return 1
+  log '已清理旧版 TTcut 启动锁。'
+  return 0
 }
 
 prepare_pid_path() {
@@ -335,6 +220,37 @@ write_pid_file() {
 if ! mkdir -p -- "$STATE_DIR" "$LOG_DIR"; then
   show_error '无法创建 TTcut 状态或日志目录。'
   exit 1
+fi
+
+if [[ "${TTCUT_LAUNCHER_LOCKED:-}" != '1' ]]; then
+  prepare_legacy_lock
+  typeset legacy_lock_status=$?
+  if (( legacy_lock_status == 2 )); then
+    exit 0
+  fi
+  if (( legacy_lock_status != 0 )); then
+    exit 1
+  fi
+
+  /usr/bin/lockf -s -t 0 -k "$LOCK_FILE" /usr/bin/env TTCUT_LAUNCHER_LOCKED=1 /bin/zsh "$0"
+  typeset lockf_status=$?
+  # The locked invocation normalizes launcher failures to 1, reserving 75 for lock contention.
+  case "$lockf_status" in
+    0|1)
+      exit "$lockf_status"
+      ;;
+    75)
+      show_running 'TTcut 正在启动'
+      exit 0
+      ;;
+    64|69|70|71|73)
+      show_error '无法获取 TTcut 启动锁。'
+      exit 1
+      ;;
+    *)
+      exit "$lockf_status"
+      ;;
+  esac
 fi
 
 if [[ -f "$LOG_FILE" ]] && (( $(stat -f '%z' -- "$LOG_FILE" 2>/dev/null) > MAX_LOG_BYTES )); then
@@ -420,15 +336,6 @@ fi
 
 export PATH="${NPM_PATH:h}:${PYTHON_PATH:h}:$SAFE_PATH"
 
-acquire_lock
-typeset lock_status=$?
-if (( lock_status == 2 )); then
-  exit 0
-fi
-if (( lock_status != 0 )); then
-  exit 1
-fi
-
 if ! prepare_pid_path; then
   show_error '无法写入 TTcut 进程状态。'
   exit 1
@@ -505,5 +412,4 @@ fi
 log "已启动 TTcut npm 进程 (PID $CHILD_PID)。"
 log "TTcut 启动检查通过 (PID $CHILD_PID)。"
 CHILD_PID=''
-release_lock
 exit 0
