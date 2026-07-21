@@ -68,9 +68,10 @@ print -r -- "$TTCUT_PYTHON" > "$root/captured-env.python"
 print -r -- "$TTCUT_TRACKNET_WEIGHTS" > "$root/captured-env.weights"
 print -r -- "$TTCUT_FFMPEG" > "$root/captured-env.ffmpeg"
 print -r -- "$TTCUT_FFPROBE" > "$root/captured-env.ffprobe"
-print -r -- "$TTCUT_LAUNCHER_LOCKED" > "$root/captured-env.locked"
+print -r -- "\${TTCUT_LAUNCHER_LOCKED-unset}" > "$root/captured-env.locked"
 print -r -- "$0 $*" > "$root/captured-env.argv"
 print -r -- called >> "$root/npm-calls"
+print -r -- "$$" >> "$root/npm-pids"
 if [[ -f "$root/force-pid-write-failure" ]]; then
   /bin/sleep 60 &
   descendant=$!
@@ -125,7 +126,6 @@ function launcherEnv(fixture: Fixture, env: Record<string, string> = {}): NodeJS
     TTCUT_LAUNCHER_STATE_DIR: fixture.state,
     TTCUT_LAUNCHER_LOG_DIR: fixture.logs,
     TTCUT_LAUNCHER_NO_UI: '1',
-    TTCUT_LAUNCHER_LOCKED: '',
     TTCUT_LAUNCHER_STARTUP_WAIT: '0.2',
     ...env,
   };
@@ -185,6 +185,13 @@ function cleanup(fixture: Fixture): void {
     if (!existsSync(processFile)) continue;
     const pid = Number.parseInt(readFileSync(processFile, 'utf8'), 10);
     if (Number.isInteger(pid) && pid > 0 && processState(pid)) terminatePid(pid);
+  }
+  const npmPidsFile = join(fixture.root, 'npm-pids');
+  if (existsSync(npmPidsFile)) {
+    const npmPids = new Set(readFileSync(npmPidsFile, 'utf8').trim().split('\n').map(Number));
+    for (const pid of npmPids) {
+      if (Number.isInteger(pid) && pid > 0 && processState(pid)) terminatePid(pid);
+    }
   }
   rmSync(fixture.root, { recursive: true, force: true });
 }
@@ -336,7 +343,7 @@ describe('macOS launcher', () => {
     expect(readFileSync(`${fixture.capture}.weights`, 'utf8').trim()).toBe(fixture.weights);
     expect(readFileSync(`${fixture.capture}.ffmpeg`, 'utf8').trim()).toBe(fixture.ffmpeg);
     expect(readFileSync(`${fixture.capture}.ffprobe`, 'utf8').trim()).toBe(fixture.ffprobe);
-    expect(readFileSync(`${fixture.capture}.locked`, 'utf8').trim()).toBe('1');
+    expect(readFileSync(`${fixture.capture}.locked`, 'utf8').trim()).toBe('unset');
     expect(readFileSync(`${fixture.capture}.argv`, 'utf8')).toContain(' start');
     const pidRecord = readFileSync(join(fixture.state, 'launcher.pid'), 'utf8').trim();
     expect(pidRecord).toMatch(/^\d+\t.+$/);
@@ -362,21 +369,30 @@ describe('macOS launcher', () => {
     const fixture = makeFixture();
     expect(run(fixture).status).toBe(0);
     await waitForFiles([fixture.npmCalls], 'first npm invocation');
+    const lockProbe = spawnSync(
+      '/usr/bin/lockf',
+      ['-s', '-t', '0', '-k', join(fixture.state, 'launcher.lock'), '/usr/bin/true'],
+    );
+    expect(lockProbe.status).toBe(0);
     expect(run(fixture).status).toBe(0);
 
     expect(readFileSync(fixture.npmCalls, 'utf8').trim().split('\n')).toHaveLength(1);
   });
 
-  macIt('serializes sixteen concurrent launchers with a pre-existing regular lock file', async () => {
+  macIt('serializes sixteen launchers despite forged TTCUT_LAUNCHER_LOCKED values', async () => {
     const fixture = makeFixture();
     mkdirSync(fixture.state, { recursive: true });
     const lockFile = join(fixture.state, 'launcher.lock');
     writeFileSync(lockFile, 'opaque lockf file contents\n');
-    const results = await Promise.all(Array.from({ length: 16 }, () => runAsync(fixture, { TTCUT_LAUNCHER_STARTUP_WAIT: '0.4' })));
+    const results = await Promise.all(Array.from({ length: 16 }, (_, index) => runAsync(fixture, {
+      TTCUT_LAUNCHER_LOCKED: index % 2 === 0 ? '1' : 'forged-value',
+      TTCUT_LAUNCHER_STARTUP_WAIT: '0.4',
+    })));
 
     expect(results.map(({ status }) => status)).toEqual(Array(16).fill(0));
-    await waitForFiles([fixture.npmCalls], 'concurrent npm invocation');
+    await waitForFiles([fixture.npmCalls, `${fixture.capture}.locked`], 'concurrent npm invocation');
     expect(readFileSync(fixture.npmCalls, 'utf8').trim().split('\n')).toHaveLength(1);
+    expect(readFileSync(`${fixture.capture}.locked`, 'utf8').trim()).toBe('unset');
     expect(readFileSync(lockFile, 'utf8')).toBe('opaque lockf file contents\n');
     expect(results.some(({ stderr }) => stderr.includes('TTcut 正在启动') || stderr.includes('TTcut 已经在运行'))).toBe(true);
   });

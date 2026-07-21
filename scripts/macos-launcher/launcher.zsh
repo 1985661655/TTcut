@@ -4,6 +4,7 @@ emulate -L zsh
 setopt pipefail
 
 export PATH='/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin'
+unset TTCUT_LAUNCHER_LOCKED
 
 readonly SAFE_PATH="$PATH"
 readonly LAUNCHER_DIR="${0:A:h}"
@@ -222,35 +223,29 @@ if ! mkdir -p -- "$STATE_DIR" "$LOG_DIR"; then
   exit 1
 fi
 
-if [[ "${TTCUT_LAUNCHER_LOCKED:-}" != '1' ]]; then
-  prepare_legacy_lock
-  typeset legacy_lock_status=$?
-  if (( legacy_lock_status == 2 )); then
-    exit 0
-  fi
-  if (( legacy_lock_status != 0 )); then
-    exit 1
-  fi
+prepare_legacy_lock
+typeset legacy_lock_status=$?
+if (( legacy_lock_status == 2 )); then
+  exit 0
+fi
+if (( legacy_lock_status != 0 )); then
+  exit 1
+fi
 
-  /usr/bin/lockf -s -t 0 -k "$LOCK_FILE" /usr/bin/env TTCUT_LAUNCHER_LOCKED=1 /bin/zsh "$0"
-  typeset lockf_status=$?
-  # The locked invocation normalizes launcher failures to 1, reserving 75 for lock contention.
-  case "$lockf_status" in
-    0|1)
-      exit "$lockf_status"
-      ;;
-    75)
-      show_running 'TTcut 正在启动'
-      exit 0
-      ;;
-    64|69|70|71|73)
-      show_error '无法获取 TTcut 启动锁。'
-      exit 1
-      ;;
-    *)
-      exit "$lockf_status"
-      ;;
-  esac
+if ! { exec 9<> "$LOCK_FILE"; } 2>/dev/null; then
+  show_error '无法获取 TTcut 启动锁。'
+  exit 1
+fi
+
+/usr/bin/lockf -s -t 0 9
+typeset lockf_status=$?
+if (( lockf_status == 75 )); then
+  show_running 'TTcut 正在启动'
+  exit 0
+fi
+if (( lockf_status != 0 )); then
+  show_error '无法获取 TTcut 启动锁。'
+  exit 1
 fi
 
 if [[ -f "$LOG_FILE" ]] && (( $(stat -f '%z' -- "$LOG_FILE" 2>/dev/null) > MAX_LOG_BYTES )); then
@@ -370,7 +365,7 @@ os.setsid()
 os.chdir(sys.argv[1])
 os.execv(sys.argv[2], [sys.argv[2], "start"])'
 
-nohup "$PYTHON_PATH" -c "$PYTHON_LAUNCH_SHIM" "$PROJECT_DIR" "$NPM_PATH" </dev/null >> "$LOG_FILE" 2>&1 &
+nohup "$PYTHON_PATH" -c "$PYTHON_LAUNCH_SHIM" "$PROJECT_DIR" "$NPM_PATH" 9>&- </dev/null >> "$LOG_FILE" 2>&1 &
 CHILD_PID=$!
 typeset child_fingerprint
 if ! wait_for_private_process_group "$CHILD_PID"; then
