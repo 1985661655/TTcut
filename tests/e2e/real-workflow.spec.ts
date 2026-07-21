@@ -233,6 +233,17 @@ test('real CUDA analysis, single-rally export, and final preview', async ({}, te
       inference_batch_size: 8,
     });
 
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await expect(page.getByRole('heading', { name: '选择比赛视频' })).toBeVisible();
+    await page.getByRole('button', { name: '设置' }).click();
+    await expect(page.getByRole('heading', { name: '设置', exact: true })).toBeVisible();
+    const reloadedBatchCard = page.locator('article.timing-setting-card').filter({ has: page.getByRole('heading', { name: '推理批量', exact: true }) });
+    const reloadedBatch8 = reloadedBatchCard.getByRole('button', { name: /推荐\s*8/ });
+    await expect(reloadedBatch8).toHaveClass(/selected/);
+    await expect(reloadedBatch8).toHaveAttribute('aria-pressed', 'true');
+    await page.getByRole('button', { name: '自动剪辑' }).click();
+    await expect(page.getByRole('heading', { name: '选择比赛视频' })).toBeVisible();
+
     await page.getByRole('button', { name: '历史剪辑' }).click();
     await expect(page.getByRole('heading', { name: '还没有历史记录' })).toBeVisible();
     await page.getByRole('button', { name: '自动剪辑' }).click();
