@@ -136,6 +136,16 @@ function expectNpmNotStarted(fixture: Fixture): void {
   expect(existsSync(fixture.npmCalls)).toBe(false);
 }
 
+async function waitForFiles(paths: string[], description: string): Promise<void> {
+  const deadline = Date.now() + 2_000;
+  while (Date.now() < deadline) {
+    if (paths.every((path) => existsSync(path) && readFileSync(path, 'utf8').trim().length > 0)) return;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  const missing = paths.filter((path) => !existsSync(path) || readFileSync(path, 'utf8').trim().length === 0);
+  throw new Error(`${description} timed out after 2000ms; incomplete files: ${missing.join(', ')}`);
+}
+
 afterEach(() => {
   for (const fixture of fixtures.splice(0)) cleanup(fixture);
 });
@@ -149,6 +159,16 @@ describe('macOS launcher', () => {
 
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('无法读取启动器配置文件');
+    expectNpmNotStarted(fixture);
+  });
+
+  macIt('reports a state or log directory initialization failure without npm', () => {
+    const fixture = makeFixture();
+    writeFileSync(fixture.logs, 'not a directory');
+    const result = run(fixture);
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('无法创建 TTcut 状态或日志目录');
     expectNpmNotStarted(fixture);
   });
 
@@ -173,11 +193,20 @@ describe('macOS launcher', () => {
     expectNpmNotStarted(fixture);
   });
 
-  macIt('starts npm from a path with spaces and Chinese characters and passes the runtime environment', () => {
+  macIt('starts npm from a path with spaces and Chinese characters and passes the runtime environment', async () => {
     const fixture = makeFixture();
     const result = run(fixture);
 
     expect(result.status).toBe(0);
+    await waitForFiles([
+      `${fixture.capture}.path`,
+      `${fixture.capture}.python`,
+      `${fixture.capture}.weights`,
+      `${fixture.capture}.ffmpeg`,
+      `${fixture.capture}.ffprobe`,
+      `${fixture.capture}.argv`,
+      fixture.npmCalls,
+    ], 'npm environment capture');
     expect(readFileSync(`${fixture.capture}.path`, 'utf8').trim()).toBe(SAFE_PATH);
     expect(readFileSync(`${fixture.capture}.python`, 'utf8').trim()).toBe(fixture.python);
     expect(readFileSync(`${fixture.capture}.weights`, 'utf8').trim()).toBe(fixture.weights);
@@ -188,20 +217,22 @@ describe('macOS launcher', () => {
     expect(readFileSync(join(fixture.logs, 'launcher.log'), 'utf8')).toContain('环境摘要');
   });
 
-  macIt('does not start another npm process while the pid file is live', () => {
+  macIt('does not start another npm process while the pid file is live', async () => {
     const fixture = makeFixture();
     expect(run(fixture).status).toBe(0);
+    await waitForFiles([fixture.npmCalls], 'first npm invocation');
     expect(run(fixture).status).toBe(0);
 
     expect(readFileSync(fixture.npmCalls, 'utf8').trim().split('\n')).toHaveLength(1);
   });
 
-  macIt('removes a stale pid file and starts normally', () => {
+  macIt('removes a stale pid file and starts normally', async () => {
     const fixture = makeFixture();
     mkdirSync(fixture.state, { recursive: true });
     writeFileSync(join(fixture.state, 'launcher.pid'), '999999\n');
 
     expect(run(fixture).status).toBe(0);
+    await waitForFiles([fixture.npmCalls], 'npm invocation after stale pid removal');
     expect(readFileSync(fixture.npmCalls, 'utf8').trim()).toBe('called');
   });
 
@@ -215,13 +246,23 @@ describe('macOS launcher', () => {
     expect(existsSync(join(fixture.state, 'launcher.pid'))).toBe(false);
   });
 
-  macIt('rotates a log larger than 5 MiB once before recording this launch', () => {
+  macIt('does not rotate a log exactly 5 MiB before recording this launch', () => {
     const fixture = makeFixture();
     mkdirSync(fixture.logs, { recursive: true });
     writeFileSync(join(fixture.logs, 'launcher.log'), 'x'.repeat(5 * 1024 * 1024));
 
     expect(run(fixture).status).toBe(0);
-    expect(statSync(join(fixture.logs, 'launcher.log.previous')).size).toBe(5 * 1024 * 1024);
+    expect(existsSync(join(fixture.logs, 'launcher.log.previous'))).toBe(false);
+    expect(statSync(join(fixture.logs, 'launcher.log')).size).toBeGreaterThan(5 * 1024 * 1024);
+  });
+
+  macIt('rotates a log larger than 5 MiB once before recording this launch', () => {
+    const fixture = makeFixture();
+    mkdirSync(fixture.logs, { recursive: true });
+    writeFileSync(join(fixture.logs, 'launcher.log'), 'x'.repeat(5 * 1024 * 1024 + 1));
+
+    expect(run(fixture).status).toBe(0);
+    expect(statSync(join(fixture.logs, 'launcher.log.previous')).size).toBe(5 * 1024 * 1024 + 1);
     expect(readFileSync(join(fixture.logs, 'launcher.log'), 'utf8')).toContain('环境摘要');
   });
 });

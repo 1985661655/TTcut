@@ -14,17 +14,9 @@ readonly LOG_FILE="${LOG_DIR}/launcher.log"
 readonly PID_FILE="${STATE_DIR}/launcher.pid"
 readonly MAX_LOG_BYTES=$((5 * 1024 * 1024))
 
-if ! mkdir -p -- "$STATE_DIR" "$LOG_DIR"; then
-  print -u2 -r -- '无法创建 TTcut 状态或日志目录。'
-  exit 1
-fi
-
-if [[ -f "$LOG_FILE" ]] && (( $(stat -f '%z' -- "$LOG_FILE" 2>/dev/null) >= MAX_LOG_BYTES )); then
-  mv -f -- "$LOG_FILE" "${LOG_FILE}.previous"
-fi
-
 log() {
-  print -r -- "[$(/bin/date '+%Y-%m-%d %H:%M:%S')] $*" >> "$LOG_FILE"
+  [[ -d "$LOG_DIR" ]] || return 0
+  print -r -- "[$(/bin/date '+%Y-%m-%d %H:%M:%S')] $*" >> "$LOG_FILE" 2>/dev/null || return 0
 }
 
 show_error() {
@@ -38,11 +30,20 @@ show_error() {
 on run argv
   set response to button returned of (display dialog (item 1 of argv) buttons {"好", "查看日志"} default button "好")
   if response is "查看日志" then
-    do shell script "/usr/bin/open " & quoted form of (item 2 of argv)
+    do shell script "if [ -e " & quoted form of (item 2 of argv) & "; then /usr/bin/open " & quoted form of (item 2 of argv) & "; fi"
   end if
 end run
 APPLESCRIPT
 }
+
+if ! mkdir -p -- "$STATE_DIR" "$LOG_DIR"; then
+  show_error '无法创建 TTcut 状态或日志目录。'
+  exit 1
+fi
+
+if [[ -f "$LOG_FILE" ]] && (( $(stat -f '%z' -- "$LOG_FILE" 2>/dev/null) > MAX_LOG_BYTES )); then
+  mv -f -- "$LOG_FILE" "${LOG_FILE}.previous"
+fi
 
 is_live_pid() {
   local pid=$1 process_state
