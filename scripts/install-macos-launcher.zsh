@@ -56,14 +56,48 @@ atomic_rename() {
   local source=$1 destination=$2
   [[ -n "$source" && -n "$destination" ]] || return 1
   "$PYTHON_PATH" -c '
+import ctypes
 import os
 import sys
 
 source, destination = sys.argv[1:3]
-if os.path.lexists(destination):
-    raise FileExistsError(destination)
-os.rename(source, destination)
+rename_exclusive = 0x00000004
+libc = ctypes.CDLL("libc.dylib", use_errno=True)
+renamex_np = libc.renamex_np
+renamex_np.argtypes = (ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint)
+renamex_np.restype = ctypes.c_int
+if renamex_np(os.fsencode(source), os.fsencode(destination), rename_exclusive) != 0:
+    error_number = ctypes.get_errno()
+    raise OSError(error_number, os.strerror(error_number), destination)
 ' "$source" "$destination" >/dev/null 2>&1
+}
+
+ignore_transition_signals() {
+  unsetopt localtraps
+  trap '' HUP INT TERM
+}
+
+restore_signal_traps() {
+  unsetopt localtraps
+  trap 'exit 1' HUP INT TERM
+}
+
+test_sync_point() {
+  local point=$1 sync_directory="${TTCUT_TEST_SYNC_DIR:-}"
+  [[ -n "$sync_directory" && -d "$sync_directory" && ! -L "$sync_directory" ]] || return 0
+
+  local ready_path="$sync_directory/${point}.ready"
+  local continue_path="$sync_directory/${point}.continue"
+  local signal_path="$sync_directory/${point}.signal"
+  local signal_acknowledged_path="$sync_directory/${point}.signal-acknowledged"
+  print -r -- "$point" > "$ready_path" || return 0
+  while [[ ! -e "$continue_path" && ! -L "$continue_path" ]]; do
+    if [[ -e "$signal_path" || -L "$signal_path" ]] && [[ ! -e "$signal_acknowledged_path" && ! -L "$signal_acknowledged_path" ]]; then
+      kill -TERM $$
+      print -r -- "$point" > "$signal_acknowledged_path"
+    fi
+    /bin/sleep 0.01
+  done
 }
 
 preserve_backup() {
@@ -91,11 +125,30 @@ restore_backup_if_needed() {
   if ! move_conflicting_target_aside; then
     return 1
   fi
+  ignore_transition_signals
   if atomic_rename "$BACKUP_DIR" "$APP_DESTINATION"; then
+    test_sync_point restore-backup-after-rename
     BACKUP_DIR=''
+    restore_signal_traps
   else
+    restore_signal_traps
     preserve_backup
     return 1
+  fi
+}
+
+discard_backup_after_success() {
+  local cleanup_path=''
+  [[ -n "$BACKUP_DIR" ]] || return 0
+
+  ignore_transition_signals
+  cleanup_path=$BACKUP_DIR
+  test_sync_point success-backup-before-clear
+  BACKUP_DIR=''
+  restore_signal_traps
+
+  if ! remove_owned_directory "$cleanup_path"; then
+    print -u2 -r -- "警告：已安装新 TTcut.app，但无法删除旧备份：$cleanup_path"
   fi
 }
 
@@ -220,26 +273,29 @@ iconutil -c icns "$ICONSET_DIR" -o "$STAGING_DIR/Contents/Resources/TTcut.icns" 
 /usr/bin/plutil -lint "$STAGING_DIR/Contents/Info.plist" >/dev/null || fail '应用 Info.plist 验证失败。'
 
 if [[ -e "$APP_DESTINATION" || -L "$APP_DESTINATION" ]]; then
-  BACKUP_DIR=$(reserve_owned_path backup) || fail "无法创建原有应用备份：$DESTINATION_PARENT"
-  if ! atomic_rename "$APP_DESTINATION" "$BACKUP_DIR"; then
-    BACKUP_DIR=''
+  backup_path=$(reserve_owned_path backup) || fail "无法创建原有应用备份：$DESTINATION_PARENT"
+  ignore_transition_signals
+  if atomic_rename "$APP_DESTINATION" "$backup_path"; then
+    BACKUP_DIR=$backup_path
+    restore_signal_traps
+  else
+    restore_signal_traps
     fail "无法备份现有应用：$APP_DESTINATION"
   fi
 fi
 
-if ! atomic_rename "$STAGING_DIR" "$APP_DESTINATION"; then
+ignore_transition_signals
+if atomic_rename "$STAGING_DIR" "$APP_DESTINATION"; then
+  STAGING_DIR=''
+  restore_signal_traps
+else
+  restore_signal_traps
   print -u2 -r -- "错误：无法安装 TTcut.app：$APP_DESTINATION"
   restore_backup_if_needed || true
   exit 1
 fi
-STAGING_DIR=''
 
-if [[ -n "$BACKUP_DIR" ]]; then
-  if ! remove_owned_directory "$BACKUP_DIR"; then
-    print -u2 -r -- "警告：已安装新 TTcut.app，但无法删除旧备份：$BACKUP_DIR"
-  fi
-  BACKUP_DIR=''
-fi
+discard_backup_after_success
 
 print -r -- "已安装 TTcut.app：$APP_DESTINATION"
 print -r -- '现在可在 Finder 中双击 TTcut.app 启动。'

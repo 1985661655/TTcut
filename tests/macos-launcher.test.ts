@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
@@ -654,6 +654,20 @@ function install(fixture: InstallerFixture, env: Record<string, string> = {}) {
   return spawnSync('/bin/zsh', [installer], { encoding: 'utf8', env: installerEnv(fixture, env) });
 }
 
+function installAsync(fixture: InstallerFixture, env: Record<string, string> = {}): {
+  child: ChildProcess;
+  result: Promise<{ status: number | null; stderr: string }>;
+} {
+  const child = spawn('/bin/zsh', [installer], { env: installerEnv(fixture, env), stdio: ['ignore', 'ignore', 'pipe'] });
+  let stderr = '';
+  child.stderr.setEncoding('utf8');
+  child.stderr.on('data', (chunk: string) => { stderr += chunk; });
+  return {
+    child,
+    result: new Promise((resolve) => child.on('close', (status) => resolve({ status, stderr }))),
+  };
+}
+
 function writeSentinelApp(destination: string): void {
   mkdirSync(destination, { recursive: true });
   writeFileSync(join(destination, 'sentinel'), 'keep this app');
@@ -665,6 +679,88 @@ function findIconsets(directory: string): string[] {
     if (entry.name.endsWith('.iconset')) return [path];
     return entry.isDirectory() ? findIconsets(path) : [];
   });
+}
+
+function createAtomicRenameRaceHook(fixture: InstallerFixture): string {
+  const hookDirectory = join(fixture.root, 'atomic rename hook');
+  mkdirSync(hookDirectory);
+  writeFileSync(join(hookDirectory, 'sitecustomize.py'), `
+import os
+import time
+import ctypes
+
+target = os.environ['TTCUT_TEST_ATOMIC_RENAME_DESTINATION']
+sync_dir = os.environ['TTCUT_TEST_ATOMIC_RENAME_SYNC_DIR']
+original_lexists = os.path.lexists
+original_cdll = ctypes.CDLL
+triggered = False
+
+def wait_for_destination_creation():
+    global triggered
+    if triggered:
+        return
+    triggered = True
+    with open(os.path.join(sync_dir, 'checked'), 'w', encoding='utf-8') as ready:
+        ready.write('checked\\n')
+    while not original_lexists(os.path.join(sync_dir, 'continue')):
+        time.sleep(0.01)
+
+def lexists(path):
+    exists = original_lexists(path)
+    if not triggered and path == target and not exists:
+        wait_for_destination_creation()
+    return exists
+
+os.path.lexists = lexists
+
+class RenameFunction:
+    def __init__(self, function):
+        object.__setattr__(self, 'function', function)
+
+    def __call__(self, source, destination, flags):
+        if os.fsdecode(destination) == target:
+            wait_for_destination_creation()
+        return self.function(source, destination, flags)
+
+    def __getattr__(self, name):
+        return getattr(self.function, name)
+
+    def __setattr__(self, name, value):
+        setattr(self.function, name, value)
+
+class Libc:
+    def __init__(self, library):
+        object.__setattr__(self, 'library', library)
+
+    def __getattr__(self, name):
+        function = getattr(self.library, name)
+        return RenameFunction(function) if name == 'renamex_np' else function
+
+def CDLL(name, *args, **kwargs):
+    library = original_cdll(name, *args, **kwargs)
+    return Libc(library) if name == 'libc.dylib' else library
+
+ctypes.CDLL = CDLL
+`);
+  return hookDirectory;
+}
+
+function createSyncDirectory(fixture: InstallerFixture): string {
+  const syncDirectory = join(fixture.root, 'installer sync');
+  mkdirSync(syncDirectory);
+  return syncDirectory;
+}
+
+function releaseSyncPoint(syncDirectory: string, point: string): void {
+  writeFileSync(join(syncDirectory, `${point}.continue`), 'continue\n');
+}
+
+async function deliverSyncTerm(syncDirectory: string, point: string): Promise<void> {
+  writeFileSync(join(syncDirectory, `${point}.signal`), 'TERM\n');
+  await waitForCondition(
+    () => existsSync(join(syncDirectory, `${point}.signal-acknowledged`)),
+    `${point} TERM delivery`,
+  );
 }
 
 afterEach(() => {
@@ -817,6 +913,94 @@ describe('macOS launcher installer', () => {
     const conflict = readdirSync(fixture.appParent).find((name) => name.includes('.TTcut.app.ttcut-installer.conflict.'));
     expect(conflict).toBeTruthy();
     expect(readFileSync(join(fixture.appParent, conflict ?? '', 'conflict'), 'utf8')).toBe('conflict\n');
+  });
+
+  macIt.each(['directory', 'file', 'symlink'] as const)('never overwrites a %s created after the destination check', async (kind) => {
+    const fixture = makeInstallerFixture();
+    const hookDirectory = createAtomicRenameRaceHook(fixture);
+    const syncDirectory = join(fixture.root, 'atomic rename sync');
+    mkdirSync(syncDirectory);
+    const externalTarget = join(fixture.root, 'external target');
+    writeSentinelApp(fixture.appDestination);
+    const { child, result } = installAsync(fixture, {
+      PYTHONPATH: hookDirectory,
+      TTCUT_TEST_ATOMIC_RENAME_DESTINATION: fixture.appDestination,
+      TTCUT_TEST_ATOMIC_RENAME_SYNC_DIR: syncDirectory,
+    });
+
+    try {
+      await waitForCondition(() => existsSync(join(syncDirectory, 'checked')), 'atomic rename destination check');
+      if (kind === 'directory') mkdirSync(fixture.appDestination);
+      else if (kind === 'file') writeFileSync(fixture.appDestination, 'concurrent file\n');
+      else {
+        mkdirSync(externalTarget);
+        symlinkSync(externalTarget, fixture.appDestination);
+      }
+      writeFileSync(join(syncDirectory, 'continue'), 'continue\n');
+
+      const completed = await result;
+      expect(completed.status, completed.stderr).not.toBe(0);
+      expect(readFileSync(join(fixture.appDestination, 'sentinel'), 'utf8')).toBe('keep this app');
+      const conflict = readdirSync(fixture.appParent).find((name) => name.includes('.TTcut.app.ttcut-installer.conflict.'));
+      expect(conflict).toBeTruthy();
+      const conflictStats = lstatSync(join(fixture.appParent, conflict ?? ''));
+      if (kind === 'directory') expect(conflictStats.isDirectory()).toBe(true);
+      else if (kind === 'file') expect(conflictStats.isFile()).toBe(true);
+      else expect(conflictStats.isSymbolicLink()).toBe(true);
+    } finally {
+      await terminateProcess(child);
+    }
+  });
+
+  macIt('keeps the restored app in place when TERM arrives after restore rename', async () => {
+    const fixture = makeInstallerFixture();
+    const syncDirectory = createSyncDirectory(fixture);
+    writeSentinelApp(fixture.appDestination);
+    const { child, result } = installAsync(fixture, {
+      TTCUT_TEST_RACE_DESTINATION: fixture.appDestination,
+      TTCUT_TEST_SYNC_DIR: syncDirectory,
+    });
+
+    try {
+      await waitForCondition(
+        () => existsSync(join(syncDirectory, 'restore-backup-after-rename.ready')),
+        'restore transition sync point',
+      );
+      expect(readFileSync(join(fixture.appDestination, 'sentinel'), 'utf8')).toBe('keep this app');
+      await deliverSyncTerm(syncDirectory, 'restore-backup-after-rename');
+      releaseSyncPoint(syncDirectory, 'restore-backup-after-rename');
+
+      const completed = await result;
+      expect(completed.status, completed.stderr).toBe(1);
+      expect(readFileSync(join(fixture.appDestination, 'sentinel'), 'utf8')).toBe('keep this app');
+    } finally {
+      releaseSyncPoint(syncDirectory, 'restore-backup-after-rename');
+      await terminateProcess(child);
+    }
+  });
+
+  macIt('keeps the new app in place when TERM arrives before successful backup cleanup is detached', async () => {
+    const fixture = makeInstallerFixture();
+    const syncDirectory = createSyncDirectory(fixture);
+    writeSentinelApp(fixture.appDestination);
+    const { child, result } = installAsync(fixture, { TTCUT_TEST_SYNC_DIR: syncDirectory });
+
+    try {
+      await waitForCondition(
+        () => existsSync(join(syncDirectory, 'success-backup-before-clear.ready')),
+        'successful backup cleanup transition sync point',
+      );
+      expect(existsSync(join(fixture.appDestination, 'Contents', 'MacOS', 'TTcutLauncher'))).toBe(true);
+      await deliverSyncTerm(syncDirectory, 'success-backup-before-clear');
+      releaseSyncPoint(syncDirectory, 'success-backup-before-clear');
+
+      const completed = await result;
+      expect(completed.status, completed.stderr).toBe(0);
+      expect(existsSync(join(fixture.appDestination, 'Contents', 'MacOS', 'TTcutLauncher'))).toBe(true);
+    } finally {
+      releaseSyncPoint(syncDirectory, 'success-backup-before-clear');
+      await terminateProcess(child);
+    }
   });
 
   macIt.each(['file', 'symlink'] as const)('replaces an existing %s target without nesting the staging bundle', (kind) => {
