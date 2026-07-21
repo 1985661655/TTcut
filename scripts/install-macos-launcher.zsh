@@ -12,14 +12,16 @@ FFPROBE_PATH="${TTCUT_FFPROBE_PATH:-/opt/homebrew/bin/ffprobe}"
 NPM_PATH="${TTCUT_NPM_PATH:-/opt/homebrew/bin/npm}"
 
 readonly SCRIPT_DIR="${0:A:h}"
-readonly LAUNCHER_SOURCE="${SCRIPT_DIR}/macos-launcher/launcher.zsh"
-readonly ICON_SOURCE="${SCRIPT_DIR:h}/resources/macos/ttcut-launcher-icon.png"
+readonly LAUNCHER_SOURCE="${TTCUT_LAUNCHER_SOURCE:-${SCRIPT_DIR}/macos-launcher/launcher.zsh}"
+readonly ICON_SOURCE="${TTCUT_ICON_SOURCE:-${SCRIPT_DIR:h}/resources/macos/ttcut-launcher-icon.png}"
 readonly DESTINATION_PARENT="${APP_DESTINATION:h}"
 readonly DESTINATION_NAME="${APP_DESTINATION:t}"
 readonly TEMP_PREFIX="${DESTINATION_PARENT}/.${DESTINATION_NAME}.ttcut-installer."
+readonly INSTALLER_LOCK_FILE="${DESTINATION_PARENT}/.${DESTINATION_NAME}.ttcut-installer.lock"
 
 typeset STAGING_DIR=''
 typeset BACKUP_DIR=''
+typeset CONFLICT_PATH=''
 typeset PRESERVE_BACKUP=0
 
 fail() {
@@ -43,13 +45,57 @@ remove_owned_directory() {
   /bin/rm -rf "$path"
 }
 
+reserve_owned_path() {
+  local kind=$1 path
+  path=$(/usr/bin/mktemp -d "${TEMP_PREFIX}${kind}.XXXXXXXX") || return 1
+  /bin/rmdir "$path" || return 1
+  print -r -- "$path"
+}
+
+atomic_rename() {
+  local source=$1 destination=$2
+  [[ -n "$source" && -n "$destination" ]] || return 1
+  "$PYTHON_PATH" -c '
+import os
+import sys
+
+source, destination = sys.argv[1:3]
+if os.path.lexists(destination):
+    raise FileExistsError(destination)
+os.rename(source, destination)
+' "$source" "$destination" >/dev/null 2>&1
+}
+
+preserve_backup() {
+  PRESERVE_BACKUP=1
+  print -u2 -r -- "错误：无法恢复原有 TTcut.app，旧备份保留在：$BACKUP_DIR"
+}
+
+move_conflicting_target_aside() {
+  [[ -e "$APP_DESTINATION" || -L "$APP_DESTINATION" ]] || return 0
+  CONFLICT_PATH=$(reserve_owned_path conflict) || {
+    preserve_backup
+    return 1
+  }
+  if ! atomic_rename "$APP_DESTINATION" "$CONFLICT_PATH"; then
+    CONFLICT_PATH=''
+    preserve_backup
+    return 1
+  fi
+  print -u2 -r -- "错误：安装目标在替换期间被重新创建，冲突内容保留在：$CONFLICT_PATH"
+  return 0
+}
+
 restore_backup_if_needed() {
-  [[ -n "$BACKUP_DIR" && "$PRESERVE_BACKUP" -eq 0 && ! -e "$APP_DESTINATION" ]] || return 0
-  if /bin/mv "$BACKUP_DIR" "$APP_DESTINATION"; then
+  [[ -n "$BACKUP_DIR" && "$PRESERVE_BACKUP" -eq 0 ]] || return 0
+  if ! move_conflicting_target_aside; then
+    return 1
+  fi
+  if atomic_rename "$BACKUP_DIR" "$APP_DESTINATION"; then
     BACKUP_DIR=''
   else
-    PRESERVE_BACKUP=1
-    print -u2 -r -- "错误：无法恢复原有 TTcut.app：$BACKUP_DIR"
+    preserve_backup
+    return 1
   fi
 }
 
@@ -73,7 +119,7 @@ reject_unsafe_value() {
   fi
 }
 
-for config_name in PROJECT_DIR APP_DESTINATION PYTHON_PATH WEIGHTS_PATH FFMPEG_PATH FFPROBE_PATH NPM_PATH; do
+for config_name in PROJECT_DIR APP_DESTINATION PYTHON_PATH WEIGHTS_PATH FFMPEG_PATH FFPROBE_PATH NPM_PATH LAUNCHER_SOURCE ICON_SOURCE; do
   reject_unsafe_value "$config_name" "${(P)config_name}"
 done
 
@@ -92,6 +138,19 @@ icon_info=$(sips -g format -g pixelWidth -g pixelHeight "$ICON_SOURCE" 2>/dev/nu
 [[ -x "$FFMPEG_PATH" ]] || fail "找不到或无法执行 FFmpeg：$FFMPEG_PATH"
 [[ -x "$FFPROBE_PATH" ]] || fail "找不到或无法执行 ffprobe：$FFPROBE_PATH"
 [[ -d "$DESTINATION_PARENT" && -w "$DESTINATION_PARENT" ]] || fail "目标目录不存在或不可写：$DESTINATION_PARENT"
+
+if ! { exec 9<> "$INSTALLER_LOCK_FILE"; } 2>/dev/null; then
+  fail "无法创建 TTcut 安装锁：$INSTALLER_LOCK_FILE"
+fi
+if /usr/bin/lockf -s -t 0 9; then
+  :
+else
+  lock_status=$?
+  if (( lock_status == 75 )); then
+    fail 'TTcut 安装器正在运行，请稍后重试。'
+  fi
+  fail "无法获取 TTcut 安装锁：$INSTALLER_LOCK_FILE"
+fi
 
 STAGING_DIR=$(/usr/bin/mktemp -d "${TEMP_PREFIX}staging.XXXXXXXX") || fail "无法在目标目录创建构建临时目录：$DESTINATION_PARENT"
 /bin/mkdir -p "$STAGING_DIR/Contents/MacOS" "$STAGING_DIR/Contents/Resources"
@@ -161,17 +220,16 @@ iconutil -c icns "$ICONSET_DIR" -o "$STAGING_DIR/Contents/Resources/TTcut.icns" 
 /usr/bin/plutil -lint "$STAGING_DIR/Contents/Info.plist" >/dev/null || fail '应用 Info.plist 验证失败。'
 
 if [[ -e "$APP_DESTINATION" || -L "$APP_DESTINATION" ]]; then
-  BACKUP_DIR=$(/usr/bin/mktemp -d "${TEMP_PREFIX}backup.XXXXXXXX") || fail "无法创建原有应用备份：$DESTINATION_PARENT"
-  /bin/rmdir "$BACKUP_DIR" || fail "无法准备原有应用备份：$BACKUP_DIR"
-  if ! /bin/mv "$APP_DESTINATION" "$BACKUP_DIR"; then
+  BACKUP_DIR=$(reserve_owned_path backup) || fail "无法创建原有应用备份：$DESTINATION_PARENT"
+  if ! atomic_rename "$APP_DESTINATION" "$BACKUP_DIR"; then
     BACKUP_DIR=''
     fail "无法备份现有应用：$APP_DESTINATION"
   fi
 fi
 
-if ! /bin/mv "$STAGING_DIR" "$APP_DESTINATION"; then
+if ! atomic_rename "$STAGING_DIR" "$APP_DESTINATION"; then
   print -u2 -r -- "错误：无法安装 TTcut.app：$APP_DESTINATION"
-  restore_backup_if_needed
+  restore_backup_if_needed || true
   exit 1
 fi
 STAGING_DIR=''
