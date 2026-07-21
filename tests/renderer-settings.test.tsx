@@ -112,7 +112,7 @@ describe('renderer settings updates', () => {
     await waitFor(() => expect(bootstrap).toHaveBeenCalledTimes(2));
     fireEvent.click(screen.getByRole('button', { name: '设置' }));
     const batchCard = screen.getByRole('heading', { name: '推理批量' }).closest('article')!;
-    const batch12 = within(batchCard).getByRole('button', { name: /更快\s*12/ });
+    const batch12 = within(batchCard).getByRole('button', { name: /较大\s*12/ });
     const batch16 = within(batchCard).getByRole('button', { name: /最大\s*16/ });
 
     await act(async () => {
@@ -142,7 +142,64 @@ describe('renderer settings updates', () => {
     for (const removeClose of removeCloses) expect(removeClose).toHaveBeenCalledTimes(1);
   });
 
-  it('serializes saves, merges the latest intent, and ignores stale results', async () => {
+  it('dispatches every save immediately and keeps dispatched intents after unmount', async () => {
+    const pendingSaves: Array<ReturnType<typeof deferred<AppSettings>>> = [];
+    const saveSettings = vi.fn((settings: AppSettings): Promise<AppSettings> => {
+      const pending = deferred<AppSettings>();
+      pendingSaves.push(pending);
+      return pending.promise;
+    });
+    const api = {
+      bootstrap: vi.fn(async () => bootstrapData),
+      saveSettings,
+      onTaskEvent: vi.fn(() => () => undefined),
+      onCloseRequested: vi.fn(() => () => undefined),
+    } as unknown as TTcutApi;
+    Object.defineProperty(window, 'ttcut', { configurable: true, value: api });
+
+    const rendered = render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: '设置' }));
+
+    const batchCard = screen.getByRole('heading', { name: '推理批量' }).closest('article')!;
+    const preRollCard = screen.getByRole('heading', { name: '回合前时间' }).closest('article')!;
+    const postRollCard = screen.getByRole('heading', { name: '回合后时间' }).closest('article')!;
+    const batch8 = within(batchCard).getByRole('button', { name: /标准\s*8/ });
+    const batch12 = within(batchCard).getByRole('button', { name: /较大\s*12/ });
+
+    fireEvent.click(batch8);
+    fireEvent.click(batch12);
+    fireEvent.click(within(preRollCard).getByRole('button', { name: /短\s*1\.5 s/ }));
+    fireEvent.click(within(postRollCard).getByRole('button', { name: /极短\s*0\.5 s/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'English' }));
+
+    const expectedSaves: AppSettings[] = [
+      { ...initialSettings, inference_batch_size: 8 },
+      { ...initialSettings, inference_batch_size: 12 },
+      { ...initialSettings, inference_batch_size: 12, pre_roll_seconds: 1.5 },
+      { ...initialSettings, inference_batch_size: 12, pre_roll_seconds: 1.5, post_roll_seconds: 0.5 },
+      { language: 'en', inference_batch_size: 12, pre_roll_seconds: 1.5, post_roll_seconds: 0.5 },
+    ];
+
+    await waitFor(() => expect(saveSettings).toHaveBeenCalledTimes(expectedSaves.length));
+    expect(screen.getByRole('button', { name: 'English' })).toHaveClass('selected');
+    expect(batch12).toHaveAttribute('aria-pressed', 'true');
+    for (let index = 0; index < expectedSaves.length; index += 1) {
+      expect(saveSettings).toHaveBeenNthCalledWith(index + 1, expectedSaves[index]);
+    }
+
+    rendered.unmount();
+    expect(saveSettings).toHaveBeenCalledTimes(expectedSaves.length);
+    for (let index = 0; index < expectedSaves.length; index += 1) {
+      const expected = expectedSaves[index]!;
+      expect(saveSettings).toHaveBeenNthCalledWith(index + 1, expected);
+      await act(async () => {
+        pendingSaves[index]!.resolve(expected);
+      });
+    }
+    expect(saveSettings).toHaveBeenCalledTimes(expectedSaves.length);
+  });
+
+  it('ignores an earlier failed save when the latest save succeeds', async () => {
     const pendingSaves: Array<ReturnType<typeof deferred<AppSettings>>> = [];
     const saveSettings = vi.fn((settings: AppSettings): Promise<AppSettings> => {
       const pending = deferred<AppSettings>();
@@ -159,52 +216,25 @@ describe('renderer settings updates', () => {
 
     render(<App />);
     fireEvent.click(await screen.findByRole('button', { name: '设置' }));
-
     const batchCard = screen.getByRole('heading', { name: '推理批量' }).closest('article')!;
-    const preRollCard = screen.getByRole('heading', { name: '回合前时间' }).closest('article')!;
-    const postRollCard = screen.getByRole('heading', { name: '回合后时间' }).closest('article')!;
-    const batch8 = within(batchCard).getByRole('button', { name: /推荐\s*8/ });
-    const batch12 = within(batchCard).getByRole('button', { name: /更快\s*12/ });
+    const batch8 = within(batchCard).getByRole('button', { name: /标准\s*8/ });
+    const batch12 = within(batchCard).getByRole('button', { name: /较大\s*12/ });
 
     fireEvent.click(batch8);
     fireEvent.click(batch12);
-    fireEvent.click(within(preRollCard).getByRole('button', { name: /短\s*1\.5 s/ }));
-    fireEvent.click(within(postRollCard).getByRole('button', { name: /极短\s*0\.5 s/ }));
-    fireEvent.click(screen.getByRole('button', { name: 'English' }));
+    await waitFor(() => expect(saveSettings).toHaveBeenCalledTimes(2));
 
-    await waitFor(() => expect(screen.getByRole('button', { name: 'English' })).toHaveClass('selected'));
-    expect(saveSettings).toHaveBeenCalledTimes(1);
-    expect(saveSettings).toHaveBeenNthCalledWith(1, { ...initialSettings, inference_batch_size: 8 });
-    expect(batch12).toHaveAttribute('aria-pressed', 'true');
+    await act(async () => {
+      pendingSaves[0]!.reject(new Error('disk write failed'));
+      pendingSaves[1]!.resolve({ ...initialSettings, inference_batch_size: 12 });
+    });
 
-    const expectedSaves: AppSettings[] = [
-      { ...initialSettings, inference_batch_size: 8 },
-      { ...initialSettings, inference_batch_size: 12 },
-      { ...initialSettings, inference_batch_size: 12, pre_roll_seconds: 1.5 },
-      { ...initialSettings, inference_batch_size: 12, pre_roll_seconds: 1.5, post_roll_seconds: 0.5 },
-      { language: 'en', inference_batch_size: 12, pre_roll_seconds: 1.5, post_roll_seconds: 0.5 },
-    ];
-
-    for (let index = 0; index < expectedSaves.length; index += 1) {
-      const expected = expectedSaves[index]!;
-      expect(saveSettings).toHaveBeenNthCalledWith(index + 1, expected);
-      await act(async () => {
-        if (index === 1) pendingSaves[index]!.reject(new Error('disk write failed'));
-        else pendingSaves[index]!.resolve(expected);
-      });
-      if (index < expectedSaves.length - 1) {
-        await waitFor(() => expect(saveSettings).toHaveBeenCalledTimes(index + 2));
-        expect(batch12).toHaveAttribute('aria-pressed', 'true');
-      }
-    }
-
-    await waitFor(() => expect(screen.getByRole('heading', { name: 'Settings' })).toBeVisible());
+    await waitFor(() => expect(batch12).toHaveAttribute('aria-pressed', 'true'));
     expect(screen.queryByRole('status')).not.toBeInTheDocument();
     expect(batch12).toHaveClass('selected');
-    expect(batch12).toHaveAttribute('aria-pressed', 'true');
   });
 
-  it('rolls back the latest failed save, reports it, and keeps the queue usable', async () => {
+  it('rolls back the latest failed save, reports it, and keeps later saves usable', async () => {
     const failedSave = deferred<AppSettings>();
     let saveAttempt = 0;
     const saveSettings = vi.fn((settings: AppSettings): Promise<AppSettings> => {
@@ -223,7 +253,7 @@ describe('renderer settings updates', () => {
     render(<App />);
     fireEvent.click(await screen.findByRole('button', { name: '设置' }));
     const batchCard = screen.getByRole('heading', { name: '推理批量' }).closest('article')!;
-    const batch8 = within(batchCard).getByRole('button', { name: /推荐\s*8/ });
+    const batch8 = within(batchCard).getByRole('button', { name: /标准\s*8/ });
 
     fireEvent.click(screen.getByRole('button', { name: 'English' }));
     await waitFor(() => expect(saveSettings).toHaveBeenCalledTimes(1));

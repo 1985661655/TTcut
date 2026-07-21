@@ -210,7 +210,7 @@ test('real CUDA analysis, single-rally export, and final preview', async ({}, te
     const batchCard = page.locator('article.timing-setting-card').filter({ has: page.getByRole('heading', { name: '推理批量', exact: true }) });
     const preRollCard = page.locator('article.timing-setting-card').filter({ has: page.getByRole('heading', { name: '回合前时间', exact: true }) });
     const postRollCard = page.locator('article.timing-setting-card').filter({ has: page.getByRole('heading', { name: '回合后时间', exact: true }) });
-    const batch8 = batchCard.getByRole('button', { name: /推荐\s*8/ });
+    const batch8 = batchCard.getByRole('button', { name: /标准\s*8/ });
     const preRollShort = preRollCard.getByRole('button', { name: /短\s*1\.5 s/ });
     const postRollVeryShort = postRollCard.getByRole('button', { name: /极短\s*0\.5 s/ });
     await batch8.click();
@@ -238,7 +238,7 @@ test('real CUDA analysis, single-rally export, and final preview', async ({}, te
     await page.getByRole('button', { name: '设置' }).click();
     await expect(page.getByRole('heading', { name: '设置', exact: true })).toBeVisible();
     const reloadedBatchCard = page.locator('article.timing-setting-card').filter({ has: page.getByRole('heading', { name: '推理批量', exact: true }) });
-    const reloadedBatch8 = reloadedBatchCard.getByRole('button', { name: /推荐\s*8/ });
+    const reloadedBatch8 = reloadedBatchCard.getByRole('button', { name: /标准\s*8/ });
     await expect(reloadedBatch8).toBeEnabled({ timeout: 60_000 });
     await expect(reloadedBatch8).toHaveClass(/selected/);
     await expect(reloadedBatch8).toHaveAttribute('aria-pressed', 'true');

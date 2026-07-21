@@ -17,12 +17,12 @@ The optimization must not change model weights, preprocessing, postprocessing, f
 
 Add one four-option choice row to the existing Settings grid:
 
-- 4: lowest memory use
-- 8: balanced and recommended on Apple Silicon
-- 12: higher throughput
-- 16: highest memory use
+- 4: Low memory
+- 8: Standard
+- 12: Large
+- 16: Maximum
 
-The control reuses the existing choice-row visual language and saves immediately, like the pre-roll and post-roll controls. Chinese and English labels are added to the existing message table. The selected value remains visible after relaunch.
+The control reuses the existing choice-row visual language and saves immediately, like the pre-roll and post-roll controls. Chinese and English labels are added to the existing message table, with a note that speed and memory use vary by device. The selected value remains visible after relaunch.
 
 ## Analysis request flow
 

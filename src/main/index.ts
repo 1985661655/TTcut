@@ -10,7 +10,6 @@ import {
 } from 'electron';
 import {
   analysisResultSchema,
-  appSettingsSchema,
   calibrationSchema,
   cutSelectionSchema,
   historySummarySchema,
@@ -27,7 +26,7 @@ import { getHistoryStore } from './history';
 import { clearMediaPaths, installMediaProtocol, registerMediaPath } from './media-protocol';
 import { probeVideo } from './probe';
 import { cancelAllTasks, cancelTask, hasActiveTasks } from './processes';
-import { loadSettings, saveSettings } from './settings';
+import { loadSettings, saveSettings, waitForPendingSettingsWrites } from './settings';
 import { handleSquirrelStartup } from './squirrel-startup';
 import { assertPlatformCompatible, getPlatformCompatibility } from './platform-compatibility';
 
@@ -42,6 +41,8 @@ if (!squirrelStartup) {
 
 let mainWindow: BrowserWindow | null = null;
 let exitApproved = false;
+let quitReady = false;
+let quitPreparation: Promise<void> | null = null;
 
 function e2eHarnessEnabled(): boolean {
   return !app.isPackaged && process.env.TTCUT_E2E === '1';
@@ -91,7 +92,7 @@ function registerIpc(): void {
       logsPath: getLogDirectory(),
     };
   });
-  ipcMain.handle(IPC.settingsSave, (_event, value: unknown) => saveSettings(appSettingsSchema.parse(value)));
+  ipcMain.handle(IPC.settingsSave, (_event, value: unknown) => saveSettings(value));
   ipcMain.handle(IPC.componentsRefresh, () => inspectComponents());
   ipcMain.handle(IPC.componentsInstallAnalysis, async (_event, consent: unknown) => {
     await assertPlatformCompatible();
@@ -272,13 +273,19 @@ app.on('activate', () => {
   if (BrowserWindow.getAllWindows().length === 0) void createWindow();
 });
 
-app.on('before-quit', async (event) => {
-  if (!exitApproved && hasActiveTasks()) {
-    event.preventDefault();
-    exitApproved = true;
-    await cancelAllTasks();
+app.on('before-quit', (event) => {
+  if (quitReady) return;
+  event.preventDefault();
+  quitPreparation ??= (async () => {
+    if (hasActiveTasks()) {
+      exitApproved = true;
+      await cancelAllTasks();
+    }
+    await waitForPendingSettingsWrites();
+    quitReady = true;
     app.quit();
-  }
+  })();
+  void quitPreparation;
 });
 
 app.on('window-all-closed', () => {
