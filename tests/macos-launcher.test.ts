@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
@@ -645,6 +645,14 @@ function writeSentinelApp(destination: string): void {
   writeFileSync(join(destination, 'sentinel'), 'keep this app');
 }
 
+function findIconsets(directory: string): string[] {
+  return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+    const path = join(directory, entry.name);
+    if (entry.name.endsWith('.iconset')) return [path];
+    return entry.isDirectory() ? findIconsets(path) : [];
+  });
+}
+
 afterEach(() => {
   for (const fixture of installerFixtures.splice(0)) {
     rmSync(fixture.root, { recursive: true, force: true });
@@ -685,7 +693,8 @@ describe('macOS launcher installer', () => {
       '<string>1.0</string>',
       '<true/>',
     ]) expect(plist).toContain(value);
-    expect(existsSync(join(contents, 'Resources', 'TTcut.iconset'))).toBe(false);
+    expect(existsSync(join(fixture.appDestination, 'TTcut.iconset'))).toBe(false);
+    expect(findIconsets(fixture.appDestination)).toEqual([]);
 
     const second = install(fixture);
     expect(second.status, second.stderr).toBe(0);
