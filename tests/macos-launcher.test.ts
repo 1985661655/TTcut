@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
@@ -573,5 +573,192 @@ describe('macOS launcher', () => {
     expect(run(fixture).status).toBe(0);
     expect(statSync(join(fixture.logs, 'launcher.log.previous')).size).toBe(5 * 1024 * 1024 + 1);
     expect(readFileSync(join(fixture.logs, 'launcher.log'), 'utf8')).toContain('环境摘要');
+  });
+});
+
+const installer = join(process.cwd(), 'scripts/install-macos-launcher.zsh');
+const installerIcon = join(process.cwd(), 'resources/macos/ttcut-launcher-icon.png');
+const installerLauncher = join(process.cwd(), 'scripts/macos-launcher/launcher.zsh');
+const installerFixtures: InstallerFixture[] = [];
+
+interface InstallerFixture {
+  root: string;
+  appParent: string;
+  appDestination: string;
+  project: string;
+  npm: string;
+  python: string;
+  weights: string;
+  ffmpeg: string;
+  ffprobe: string;
+}
+
+function makeInstallerFixture(): InstallerFixture {
+  const root = mkdtempSync(join(tmpdir(), 'ttcut installer '));
+  const project = join(root, "O'Brien 项目 = 空格");
+  const bin = join(root, '工具 = bin');
+  const appParent = join(root, 'Applications 中文');
+  const fixture: InstallerFixture = {
+    root,
+    appParent,
+    appDestination: join(appParent, 'TTcut.app'),
+    project,
+    npm: join(bin, 'npm = 工具'),
+    python: join(bin, 'python = 工具'),
+    weights: join(root, "TrackNet O'Brien = 权重.pt"),
+    ffmpeg: join(bin, 'ffmpeg = 工具'),
+    ffprobe: join(bin, 'ffprobe = 工具'),
+  };
+  mkdirSync(join(project, 'node_modules'), { recursive: true });
+  mkdirSync(bin, { recursive: true });
+  mkdirSync(appParent, { recursive: true });
+  writeFileSync(join(project, 'package.json'), '{"name":"installer-test"}\n');
+  executable(fixture.npm);
+  executable(fixture.python);
+  executable(fixture.ffmpeg);
+  executable(fixture.ffprobe);
+  writeFileSync(fixture.weights, 'weights');
+  installerFixtures.push(fixture);
+  return fixture;
+}
+
+function installerEnv(fixture: InstallerFixture, env: Record<string, string> = {}): NodeJS.ProcessEnv {
+  return {
+    ...process.env,
+    TTCUT_APP_DESTINATION: fixture.appDestination,
+    TTCUT_PROJECT_DIR: fixture.project,
+    TTCUT_NPM_PATH: fixture.npm,
+    TTCUT_PYTHON_PATH: fixture.python,
+    TTCUT_WEIGHTS_PATH: fixture.weights,
+    TTCUT_FFMPEG_PATH: fixture.ffmpeg,
+    TTCUT_FFPROBE_PATH: fixture.ffprobe,
+    ...env,
+  };
+}
+
+function install(fixture: InstallerFixture, env: Record<string, string> = {}) {
+  return spawnSync('/bin/zsh', [installer], { encoding: 'utf8', env: installerEnv(fixture, env) });
+}
+
+function writeSentinelApp(destination: string): void {
+  mkdirSync(destination, { recursive: true });
+  writeFileSync(join(destination, 'sentinel'), 'keep this app');
+}
+
+afterEach(() => {
+  for (const fixture of installerFixtures.splice(0)) {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+describe('macOS launcher installer', () => {
+  macIt('builds a valid, idempotent app bundle with raw configuration values', () => {
+    const fixture = makeInstallerFixture();
+    const first = install(fixture);
+    expect(first.status, first.stderr).toBe(0);
+
+    const contents = join(fixture.appDestination, 'Contents');
+    const executablePath = join(contents, 'MacOS', 'TTcutLauncher');
+    const configPath = join(contents, 'Resources', 'launcher.conf');
+    const iconPath = join(contents, 'Resources', 'TTcut.icns');
+    const plistPath = join(contents, 'Info.plist');
+    expect(statSync(executablePath).mode & 0o111).not.toBe(0);
+    expect(readFileSync(executablePath, 'utf8')).toBe(readFileSync(installerLauncher, 'utf8'));
+    expect(readFileSync(configPath, 'utf8')).toBe([
+      `PROJECT_DIR=${fixture.project}`,
+      `NPM_PATH=${fixture.npm}`,
+      `PYTHON_PATH=${fixture.python}`,
+      `WEIGHTS_PATH=${fixture.weights}`,
+      `FFMPEG_PATH=${fixture.ffmpeg}`,
+      `FFPROBE_PATH=${fixture.ffprobe}`,
+      '',
+    ].join('\n'));
+    expect(statSync(iconPath).size).toBeGreaterThan(0);
+    expect(spawnSync('/usr/bin/plutil', ['-lint', plistPath], { encoding: 'utf8' }).status).toBe(0);
+    const plist = readFileSync(plistPath, 'utf8');
+    for (const value of [
+      'TTcutLauncher',
+      'TTcut',
+      'com.weiye.ttcut.local-launcher',
+      '<string>TTcut</string>',
+      '<string>APPL</string>',
+      '<string>1.0</string>',
+      '<true/>',
+    ]) expect(plist).toContain(value);
+    expect(existsSync(join(contents, 'Resources', 'TTcut.iconset'))).toBe(false);
+
+    const second = install(fixture);
+    expect(second.status, second.stderr).toBe(0);
+    expect(existsSync(executablePath)).toBe(true);
+    expect(existsSync(join(fixture.appDestination, 'sentinel'))).toBe(false);
+  });
+
+  macIt.each([
+    ['launcher source', () => join(installerLauncher, '..'), 'launcher.zsh'],
+    ['icon source', () => join(installerIcon, '..'), 'ttcut-launcher-icon.png'],
+  ])('does not replace an existing app when the %s is missing', (_name, parent, fileName) => {
+    const fixture = makeInstallerFixture();
+    writeSentinelApp(fixture.appDestination);
+    const source = join(parent(), fileName);
+    const backup = `${source}.installer-test-backup`;
+    renameSync(source, backup);
+    try {
+      const result = install(fixture);
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toMatch(/[\u4e00-\u9fff]/);
+      expect(readFileSync(join(fixture.appDestination, 'sentinel'), 'utf8')).toBe('keep this app');
+    } finally {
+      renameSync(backup, source);
+    }
+  });
+
+  macIt.each([
+    ['project directory', (fixture: InstallerFixture) => ({ TTCUT_PROJECT_DIR: join(fixture.root, 'missing project') })],
+    ['package.json', (fixture: InstallerFixture) => {
+      rmSync(join(fixture.project, 'package.json'));
+      return {};
+    }],
+    ['node_modules', (fixture: InstallerFixture) => {
+      rmSync(join(fixture.project, 'node_modules'), { recursive: true });
+      return {};
+    }],
+    ['npm', (fixture: InstallerFixture) => ({ TTCUT_NPM_PATH: join(fixture.root, 'missing npm') })],
+    ['Python', (fixture: InstallerFixture) => ({ TTCUT_PYTHON_PATH: join(fixture.root, 'missing python') })],
+    ['TrackNet weights', (fixture: InstallerFixture) => {
+      rmSync(fixture.weights);
+      return {};
+    }],
+    ['FFmpeg', (fixture: InstallerFixture) => ({ TTCUT_FFMPEG_PATH: join(fixture.root, 'missing ffmpeg') })],
+    ['ffprobe', (fixture: InstallerFixture) => ({ TTCUT_FFPROBE_PATH: join(fixture.root, 'missing ffprobe') })],
+  ] as const)('does not replace an existing app when %s is missing', (_name, makeFailure) => {
+    const fixture = makeInstallerFixture();
+    writeSentinelApp(fixture.appDestination);
+    const result = install(fixture, makeFailure(fixture));
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toMatch(/[\u4e00-\u9fff]/);
+    expect(readFileSync(join(fixture.appDestination, 'sentinel'), 'utf8')).toBe('keep this app');
+  });
+
+  macIt('does not replace an existing app when icon conversion fails', () => {
+    const fixture = makeInstallerFixture();
+    writeSentinelApp(fixture.appDestination);
+    const fakeBin = join(fixture.root, 'fake bin');
+    mkdirSync(fakeBin);
+    executable(join(fakeBin, 'iconutil'), '#!/bin/zsh\nexit 91\n');
+    const result = install(fixture, { PATH: `${fakeBin}:${process.env.PATH}` });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toMatch(/[\u4e00-\u9fff]/);
+    expect(readFileSync(join(fixture.appDestination, 'sentinel'), 'utf8')).toBe('keep this app');
+  });
+
+  macIt('fails safely when the destination parent is not a writable directory', () => {
+    const fixture = makeInstallerFixture();
+    const invalidParent = join(fixture.root, 'not a directory');
+    writeFileSync(invalidParent, 'file');
+    fixture.appDestination = join(invalidParent, 'TTcut.app');
+    const result = install(fixture);
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('目标目录');
+    expect(existsSync(fixture.appDestination)).toBe(false);
   });
 });
