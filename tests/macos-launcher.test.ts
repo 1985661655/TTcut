@@ -153,6 +153,14 @@ afterEach(() => {
 const macIt = process.platform === 'darwin' ? it : it.skip;
 
 describe('macOS launcher', () => {
+  it('opens an existing log through Finder and safely ignores a missing log', () => {
+    const source = readFileSync(launcher, 'utf8');
+
+    expect(source).toContain('tell application "Finder" to open (POSIX file (item 2 of argv))');
+    expect(source).toContain('try\n      tell application "Finder" to open (POSIX file (item 2 of argv))\n    end try');
+    expect(source).not.toContain('do shell script "if [ -e ');
+  });
+
   macIt('rejects an unreadable configuration before npm starts', () => {
     const fixture = makeFixture();
     const result = run(fixture, { TTCUT_LAUNCHER_CONFIG: join(fixture.root, 'missing.conf') });

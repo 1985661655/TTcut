@@ -30,7 +30,9 @@ show_error() {
 on run argv
   set response to button returned of (display dialog (item 1 of argv) buttons {"好", "查看日志"} default button "好")
   if response is "查看日志" then
-    do shell script "if [ -e " & quoted form of (item 2 of argv) & "; then /usr/bin/open " & quoted form of (item 2 of argv) & "; fi"
+    try
+      tell application "Finder" to open (POSIX file (item 2 of argv))
+    end try
   end if
 end run
 APPLESCRIPT
