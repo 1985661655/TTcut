@@ -239,6 +239,7 @@ test('real CUDA analysis, single-rally export, and final preview', async ({}, te
     await expect(page.getByRole('heading', { name: '设置', exact: true })).toBeVisible();
     const reloadedBatchCard = page.locator('article.timing-setting-card').filter({ has: page.getByRole('heading', { name: '推理批量', exact: true }) });
     const reloadedBatch8 = reloadedBatchCard.getByRole('button', { name: /推荐\s*8/ });
+    await expect(reloadedBatch8).toBeEnabled({ timeout: 60_000 });
     await expect(reloadedBatch8).toHaveClass(/selected/);
     await expect(reloadedBatch8).toHaveAttribute('aria-pressed', 'true');
     await page.getByRole('button', { name: '自动剪辑' }).click();
