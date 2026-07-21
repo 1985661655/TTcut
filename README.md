@@ -120,7 +120,27 @@ npm run install:macos-launcher
 open /Applications/TTcut.app
 ```
 
-启动器依赖当前 checkout、`.venv312`、`~/Downloads/TrackNet_best.pt` 和 Homebrew FFmpeg；后台启动不会弹出终端。日志写入 `~/Library/Logs/TTcut/launcher.log`。更新代码或路径后，请重新运行 `npm run install:macos-launcher`。删除启动器可使用：
+启动器仅供本机开发使用，后台启动不会弹出终端。默认路径为：
+
+```text
+TTCUT_PROJECT_DIR=/Users/xkkx6/Documents/TTcut-apple-silicon-dev-port
+TTCUT_PYTHON_PATH=/Users/xkkx6/Documents/TTcut-apple-silicon-dev-port/.venv312/bin/python
+TTCUT_WEIGHTS_PATH=/Users/xkkx6/Downloads/TrackNet_best.pt
+TTCUT_FFMPEG_PATH=/opt/homebrew/bin/ffmpeg
+TTCUT_FFPROBE_PATH=/opt/homebrew/bin/ffprobe
+TTCUT_NPM_PATH=/opt/homebrew/bin/npm
+TTCUT_APP_DESTINATION=/Applications/TTcut.app
+```
+
+因此启动器依赖上述项目目录、`.venv312`、`~/Downloads/TrackNet_best.pt` 和 Homebrew FFmpeg；默认 npm 是 `/opt/homebrew/bin/npm`，使用非 Homebrew npm 时请用 `TTCUT_NPM_PATH` 覆盖。日志写入 `~/Library/Logs/TTcut/launcher.log`。
+
+如果从其他 checkout 安装，请在该 checkout 根目录执行以下命令；将 `.venv312/bin/python` 替换为实际 venv 的 Python 路径：
+
+```zsh
+TTCUT_PROJECT_DIR="$PWD" TTCUT_PYTHON_PATH="$PWD/.venv312/bin/python" npm run install:macos-launcher
+```
+
+普通项目代码更新无需重装；只有启动器脚本、图标或任何配置路径改变时，才需要重新运行 `npm run install:macos-launcher`。安装命令默认会安全替换现有的 `/Applications/TTcut.app`；需要保留同名 App 时，请用 `TTCUT_APP_DESTINATION` 指向其他路径。删除启动器可使用：
 
 ```zsh
 rm -rf /Applications/TTcut.app
