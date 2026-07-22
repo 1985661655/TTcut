@@ -1,4 +1,4 @@
-import { open, rename, rm, stat, statfs } from 'node:fs/promises';
+import { open, rm, stat, statfs } from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { BrowserWindow } from 'electron';
@@ -16,7 +16,7 @@ import {
   expectedOutputDuration,
 } from './media-plan';
 import { registerMediaPath } from './media-protocol';
-import { chooseOutputPath, pathExists } from './output-path';
+import { chooseOutputPath, publishOutput } from './output-path';
 import { probeAudioPacketBoundaries, probeKeyframes, probeVideo } from './probe';
 import { hasActiveTasks, spawnTracked } from './processes';
 
@@ -227,8 +227,7 @@ export async function startExport(window: BrowserWindow, rawSelection: CutSelect
       );
       await validateExportOutput(partial, duration, analysis.video);
     }
-    if (await pathExists(output)) throw new Error('OUTPUT_COLLISION');
-    await rename(partial, output);
+    await publishOutput(partial, output);
     const result = {
       taskId,
       outputPath: output,
