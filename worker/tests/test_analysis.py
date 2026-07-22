@@ -103,6 +103,13 @@ def test_worker_request_accepts_supported_batch_sizes(batch_size):
     assert validate_request(request) == request
 
 
+def test_worker_request_accepts_mov_video():
+    request = valid_request()
+    request["video_path"] = "IMG_7818.MOV"
+
+    assert validate_request(request) == request
+
+
 def test_worker_request_rejects_unsupported_batch_size():
     request = valid_request()
     request["batch_size"] = 6

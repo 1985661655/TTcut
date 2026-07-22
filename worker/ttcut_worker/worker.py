@@ -14,6 +14,7 @@ from .errors import InvalidRequestError, WorkerError, WeightError
 from .model import load_tracknet
 from .predictor import TrackNetPredictor
 from .rallies import group_rallies
+from .video import SUPPORTED_VIDEO_SUFFIXES
 
 
 def emit(payload: dict) -> None:
@@ -31,7 +32,7 @@ def validate_request(value: object) -> dict:
             raise ValueError("device")
         if not isinstance(value["batch_size"], int) or isinstance(value["batch_size"], bool) or value["batch_size"] not in {4, 8, 12, 16}:
             raise ValueError("batch_size")
-        if not isinstance(value["video_path"], str) or Path(value["video_path"]).suffix.lower() != ".mp4":
+        if not isinstance(value["video_path"], str) or Path(value["video_path"]).suffix.lower() not in SUPPORTED_VIDEO_SUFFIXES:
             raise ValueError("video_path")
         calibration = value["calibration"]
         if not isinstance(calibration, dict) or set(calibration) != {"video_width", "video_height", "points"}:
@@ -102,7 +103,7 @@ def analyze(request: dict) -> dict:
             "variable_frame_rate": False,
             "video_codec": "unknown",
             "audio_codec": None,
-            "container": "mp4",
+            "container": info.path.suffix.lower().lstrip("."),
             "frame_count": info.decoded_frame_count,
         },
         "rallies": normalized,
