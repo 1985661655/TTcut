@@ -52,7 +52,7 @@ function e2eHarnessEnabled(): boolean {
 if (e2eHarnessEnabled() && process.env.TTCUT_E2E_USER_DATA) {
   app.setPath('userData', path.resolve(process.env.TTCUT_E2E_USER_DATA));
 }
-if (e2eHarnessEnabled()) app.disableHardwareAcceleration();
+if (e2eHarnessEnabled() && process.env.TTCUT_E2E_ENABLE_GPU !== '1') app.disableHardwareAcceleration();
 
 function currentWindow(): BrowserWindow {
   if (!mainWindow || mainWindow.isDestroyed()) throw new Error('WINDOW_UNAVAILABLE');
