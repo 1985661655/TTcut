@@ -29,6 +29,7 @@ import { cancelAllTasks, cancelTask, hasActiveTasks } from './processes';
 import { loadSettings, saveSettings, waitForPendingSettingsWrites } from './settings';
 import { handleSquirrelStartup } from './squirrel-startup';
 import { assertPlatformCompatible, getPlatformCompatibility } from './platform-compatibility';
+import { SUPPORTED_VIDEO_PICKER_EXTENSIONS, videoContainerForPath } from './video-format';
 
 const squirrelStartup = handleSquirrelStartup();
 
@@ -59,7 +60,7 @@ function currentWindow(): BrowserWindow {
 }
 
 async function selectedVideo(filePath: string) {
-  if (path.extname(filePath).toLowerCase() !== '.mp4') throw new Error('INVALID_INPUT');
+  if (!videoContainerForPath(filePath)) throw new Error('INVALID_INPUT');
   const info = await stat(filePath);
   if (!info.isFile()) throw new Error('INVALID_INPUT');
   return {
@@ -109,8 +110,8 @@ function registerIpc(): void {
       return selectedVideo(fixture);
     }
     const result = await dialog.showOpenDialog(currentWindow(), {
-      title: 'Select MP4 video', properties: ['openFile'],
-      filters: [{ name: 'MP4 video', extensions: ['mp4'] }],
+      title: 'Select MP4 or MOV video', properties: ['openFile'],
+      filters: [{ name: 'Select MP4 or MOV video', extensions: [...SUPPORTED_VIDEO_PICKER_EXTENSIONS] }],
     });
     return result.canceled || !result.filePaths[0] ? null : selectedVideo(result.filePaths[0]);
   });

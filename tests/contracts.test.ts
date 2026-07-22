@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { analysisRequestSchema } from '../src/shared/contracts';
+import { analysisRequestSchema, videoMetadataSchema } from '../src/shared/contracts';
 
 const validRequest = {
   schema_version: 1,
@@ -34,5 +34,43 @@ describe('analysis request contract', () => {
       ...validRequest,
       batch_size: batchSize,
     })).toThrow();
+  });
+});
+
+describe('video metadata contract', () => {
+  it('accepts complete MOV metadata', () => {
+    const metadata = {
+      path: '/videos/match.mov',
+      duration_seconds: 120.5,
+      width: 1920,
+      height: 1080,
+      fps: 59.94,
+      nominal_fps: 60,
+      variable_frame_rate: true,
+      video_codec: 'hevc',
+      audio_codec: 'aac',
+      container: 'mov',
+      frame_count: 7223,
+      average_bitrate: 12_000_000,
+      audio_bitrate: 256_000,
+      pixel_format: 'yuv420p',
+      audio_sample_rate: 48_000,
+      audio_channels: 2,
+      video_duration_seconds: 120.5,
+      audio_duration_seconds: 120.48,
+      video_start_time_seconds: 0,
+      audio_start_time_seconds: 0,
+      video_time_base: '1/60000',
+      audio_time_base: '1/48000',
+      rotation: 0,
+      sample_aspect_ratio: '1:1',
+      display_aspect_ratio: '16:9',
+      color_range: 'tv',
+      color_space: 'bt709',
+      color_transfer: 'bt709',
+      color_primaries: 'bt709',
+    } as const;
+
+    expect(videoMetadataSchema.parse(metadata)).toEqual(metadata);
   });
 });

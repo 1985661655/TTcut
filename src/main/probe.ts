@@ -2,6 +2,7 @@ import path from 'node:path';
 import { videoMetadataSchema, type VideoMetadata } from '../shared/contracts';
 import { resolveComponents } from './components';
 import { runProcess } from './processes';
+import { videoContainerForPath } from './video-format';
 
 type ProbeStream = {
   codec_type?: string;
@@ -94,7 +95,8 @@ async function sampledVfr(ffprobe: string, videoPath: string): Promise<boolean> 
 }
 
 export async function probeVideo(videoPath: string): Promise<VideoMetadata> {
-  if (path.extname(videoPath).toLowerCase() !== '.mp4') throw new Error('INVALID_INPUT');
+  const container = videoContainerForPath(videoPath);
+  if (!container) throw new Error('INVALID_INPUT');
   const components = await resolveComponents();
   if (!components.ffprobe) throw new Error('MEDIA_COMPONENT_MISSING');
   const result = await runProcess(components.ffprobe, [
@@ -130,7 +132,7 @@ export async function probeVideo(videoPath: string): Promise<VideoMetadata> {
     variable_frame_rate: fieldRatesDiffer || packetDurationsDiffer,
     video_codec: video.codec_name ?? 'unknown',
     audio_codec: audio?.codec_name ?? null,
-    container: 'mp4',
+    container,
     frame_count: frameCount,
     average_bitrate: optionalInteger(video.bit_rate ?? data.format?.bit_rate),
     audio_bitrate: optionalInteger(audio?.bit_rate),
