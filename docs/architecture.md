@@ -29,12 +29,12 @@
 ## 数据流
 
 ```text
-MP4 -> ffprobe -> 四点标定 -> AnalysisRequestV1
-     -> Python Worker -> progress JSONL -> AnalysisResultV1
-     -> 原子保存历史记录 + FFmpeg 提取首帧封面
-     -> Main 重新计算选择 -> CutGroup[]
-     -> FFmpeg -> .partial.mp4 -> 探测/同步/元数据验证
-     -> 原子改名 -> ttcut-media:// 成片预览
+MP4/MOV -> ffprobe -> 四点标定 -> AnalysisRequestV1
+        -> Python Worker -> progress JSONL -> AnalysisResultV1
+        -> 原子保存历史记录 + FFmpeg 提取首帧封面
+        -> Main 重新计算选择 -> CutGroup[]
+        -> FFmpeg -> .partial.mp4 -> 探测/同步/元数据验证
+        -> 原子改名 -> ttcut-media:// 成片预览
 ```
 
 Renderer 不能提交任意剪辑时间段；Main 只接受模式、阈值、回合 ID 和枚举化的前后时间，并使用最近一次经验证的分析结果重新计算边界。

@@ -249,13 +249,13 @@ test('real CUDA analysis, single-rally export, and final preview', async ({}, te
     await expect(page.getByRole('heading', { name: '还没有历史记录' })).toBeVisible();
     await page.getByRole('button', { name: '自动剪辑' }).click();
     await expect(page.getByRole('button', { name: '返回', exact: true })).toHaveCount(0);
-    await page.getByRole('button', { name: /选择 MP4 视频/ }).click();
+    await page.getByRole('button', { name: /选择 MP4 或 MOV 视频/ }).click();
     await expect(page.getByRole('heading', { name: '标定球桌' })).toBeVisible({ timeout: 30_000 });
     await expect(page.getByText('1280 × 720', { exact: true })).toBeVisible();
     await page.getByRole('button', { name: '返回', exact: true }).click();
     await expect(page.getByRole('heading', { name: '选择比赛视频' })).toBeVisible();
     await expect(page.getByRole('button', { name: '返回', exact: true })).toHaveCount(0);
-    await page.getByRole('button', { name: /选择 MP4 视频/ }).click();
+    await page.getByRole('button', { name: /选择 MP4 或 MOV 视频/ }).click();
     await expect(page.getByRole('heading', { name: '标定球桌' })).toBeVisible({ timeout: 30_000 });
     const calibrationVideo = page.locator('.video-surface video');
     await calibrationVideo.evaluate(async (element: HTMLVideoElement) => {

@@ -665,7 +665,7 @@ export function App() {
                     });
                   }}
                 >
-                  <span className="drop-icon">＋</span><strong>{t.chooseVideo}</strong><span>{t.dropVideo}</span><small>.mp4</small>
+                  <span className="drop-icon">＋</span><strong>{t.chooseVideo}</strong><span>{t.dropVideo}</span><small>.mp4 / .mov</small>
                 </button>
               </div>
             )}
