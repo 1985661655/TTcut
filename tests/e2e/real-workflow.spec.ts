@@ -11,17 +11,29 @@ import { setTimeout as delay } from 'node:timers/promises';
 const projectRoot = path.resolve(process.cwd());
 const sourceVideo = process.env.TTCUT_E2E_VIDEO
   ?? path.join(projectRoot, '.baseline', 'fixtures', '1-193.mp4');
+const movSourceVideo = process.env.TTCUT_E2E_MOV_VIDEO;
 const pythonPath = process.env.TTCUT_E2E_PYTHON
   ?? path.join(projectRoot, '.baseline', 'analysis-runtime', 'python.exe');
 const weightsPath = process.env.TTCUT_E2E_WEIGHTS
   ?? path.join(projectRoot, '.baseline', 'weight-assets', 'TrackNet_best.pt');
 const ffmpegRoot = process.env.TTCUT_E2E_FFMPEG_ROOT
   ?? path.join(projectRoot, '.baseline', 'components', 'ffmpeg-n8.1.2-22-g94138f6973-win64-lgpl-shared-8.1', 'bin');
+const ffmpegPath = process.env.TTCUT_E2E_FFMPEG
+  ?? path.join(ffmpegRoot, 'ffmpeg.exe');
+const ffprobePath = process.env.TTCUT_E2E_FFPROBE
+  ?? path.join(ffmpegRoot, 'ffprobe.exe');
 const electronPath = process.env.TTCUT_E2E_ELECTRON
   ?? path.join(projectRoot, '.baseline', 'electron-dev', '43.1.1', 'electron.exe');
 const fixtureDir = path.join(projectRoot, '.baseline', 'e2e');
-const fixtureVideo = path.join(fixtureDir, '1-193-e2e.mp4');
 const screenshotDir = path.join(projectRoot, 'output', 'playwright', 'screenshots');
+
+function supportedVideoExtension(filePath: string): '.mp4' | '.mov' {
+  const extension = path.extname(filePath).toLowerCase();
+  if (extension === '.mp4' || extension === '.mov') return extension;
+  throw new Error(`Real E2E source must use a supported MP4 or MOV extension: ${filePath}`);
+}
+
+const fixtureVideo = path.join(fixtureDir, `1-193-e2e${supportedVideoExtension(sourceVideo)}`);
 
 const calibrationPoints = [
   [695, 303],
@@ -118,9 +130,155 @@ async function stopElectron(page: Page | null, browser: Browser | null, child: C
   }
 }
 
+test('real MOV probe, protocol streaming, and calibration playback', async ({}, testInfo) => {
+  test.skip(!movSourceVideo, 'Set TTCUT_E2E_MOV_VIDEO to run the real MOV smoke test.');
+  test.setTimeout(3 * 60 * 1_000);
+
+  const movVideo = path.resolve(movSourceVideo!);
+  expect(path.extname(movVideo).toLowerCase()).toBe('.mov');
+  for (const filePath of [movVideo, pythonPath, weightsPath, electronPath, ffmpegPath, ffprobePath]) {
+    await requireFile(filePath);
+  }
+
+  const runRoot = path.join(fixtureDir, `mov-smoke-${Date.now()}`);
+  const isolatedUserData = path.join(runRoot, 'user-data');
+  const isolatedComponents = path.join(runRoot, 'components');
+  const nativeLog = path.join(runRoot, 'electron-native.log');
+  const screenshot = path.join(runRoot, 'mov-smoke.png');
+  await mkdir(isolatedUserData, { recursive: true });
+
+  let electronProcess: ChildProcess | null = null;
+  let browser: Browser | null = null;
+  let page: Page | null = null;
+  const nativeStderr: string[] = [];
+  const rendererErrors: string[] = [];
+  try {
+    const port = await freePort();
+    electronProcess = spawn(electronPath, [
+      `--remote-debugging-port=${port}`,
+      '--remote-allow-origins=*',
+      '--no-sandbox',
+      '--disable-gpu',
+      '--enable-logging=file',
+      `--log-file=${nativeLog}`,
+      projectRoot,
+    ], {
+      cwd: projectRoot,
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: {
+        ...process.env,
+        PYTHONUTF8: '1',
+        ELECTRON_ENABLE_LOGGING: '1',
+        TTCUT_E2E: '1',
+        TTCUT_E2E_USER_DATA: isolatedUserData,
+        TTCUT_E2E_COMPONENTS_ROOT: isolatedComponents,
+        TTCUT_E2E_VIDEO: movVideo,
+        TTCUT_PYTHON: pythonPath,
+        TTCUT_TRACKNET_WEIGHTS: weightsPath,
+        TTCUT_FFMPEG: ffmpegPath,
+        TTCUT_FFPROBE: ffprobePath,
+      },
+    });
+    electronProcess.stderr?.setEncoding('utf8');
+    electronProcess.stderr?.on('data', (chunk: string) => nativeStderr.push(chunk));
+    await waitForCdp(port, electronProcess, nativeStderr);
+    browser = await connectCdp(port, electronProcess, nativeStderr);
+    page = await appPage(browser);
+    page.on('pageerror', (error) => rendererErrors.push(error.message));
+    page.on('console', (message) => {
+      if (message.type() === 'error') rendererErrors.push(message.text());
+    });
+    await page.waitForLoadState('domcontentloaded');
+
+    await expect(page.getByRole('heading', { name: '选择比赛视频' })).toBeVisible({ timeout: 60_000 });
+    await expect(page.getByRole('button', { name: '选择 MP4 或 MOV 视频' })).toBeVisible();
+
+    const selected = await page.evaluate(() => window.ttcut.selectVideo());
+    expect(selected).not.toBeNull();
+    expect(selected!.path).toBe(movVideo);
+    expect(selected!.name).toBe(path.basename(movVideo));
+    expect(path.extname(selected!.path).toLowerCase()).toBe('.mov');
+
+    const probe = await page.evaluate((videoPath) => window.ttcut.probeVideo(videoPath), movVideo);
+    expect(probe.path).toBe(movVideo);
+    expect(probe.container).toBe('mov');
+    expect(probe.width).toBeGreaterThan(0);
+    expect(probe.height).toBeGreaterThan(0);
+    expect(Number.isInteger(probe.width)).toBe(true);
+    expect(Number.isInteger(probe.height)).toBe(true);
+    expect(probe.fps).toBeGreaterThan(0);
+    expect(Number.isFinite(probe.fps)).toBe(true);
+    expect(probe.video_codec).not.toBe('unknown');
+    expect(probe.video_codec).toMatch(/^[a-z0-9][a-z0-9_.-]*$/i);
+
+    await page.getByRole('button', { name: '选择 MP4 或 MOV 视频' }).click();
+    await expect(page.getByRole('heading', { name: '标定球桌' })).toBeVisible({ timeout: 30_000 });
+    const calibrationVideo = page.locator('.video-surface video');
+    const videoState = await calibrationVideo.evaluate(async (element: HTMLVideoElement) => {
+      if (element.readyState < 1) {
+        await new Promise<void>((resolve, reject) => {
+          element.addEventListener('loadedmetadata', () => resolve(), { once: true });
+          element.addEventListener('error', () => reject(new Error('MOV metadata failed to load.')), { once: true });
+        });
+      }
+      return {
+        src: element.currentSrc || element.src,
+        readyState: element.readyState,
+        width: element.videoWidth,
+        height: element.videoHeight,
+      };
+    });
+    expect(videoState.src).toMatch(/^ttcut-media:\/\//);
+    expect(videoState.readyState).toBeGreaterThanOrEqual(1);
+    expect(videoState.width).toBe(probe.width);
+    expect(videoState.height).toBe(probe.height);
+
+    const rangeResponse = await calibrationVideo.evaluate(async (element: HTMLVideoElement) => {
+      const response = await fetch(element.currentSrc || element.src, { headers: { Range: 'bytes=0-0' } });
+      const body = await response.arrayBuffer();
+      return {
+        status: response.status,
+        contentType: response.headers.get('content-type'),
+        contentRange: response.headers.get('content-range'),
+        contentLength: response.headers.get('content-length'),
+        bodyLength: body.byteLength,
+      };
+    });
+    expect(rangeResponse.status).toBe(206);
+    expect(rangeResponse.contentType).toBe('video/quicktime');
+    expect(rangeResponse.contentRange).toMatch(/^bytes 0-0\/[1-9]\d*$/);
+    expect(rangeResponse.contentLength).toBe('1');
+    expect(rangeResponse.bodyLength).toBe(1);
+
+    const playback = await calibrationVideo.evaluate(async (element: HTMLVideoElement) => {
+      const startTime = element.currentTime;
+      element.muted = true;
+      await element.play();
+      const deadline = performance.now() + 3_000;
+      while (element.currentTime <= startTime && performance.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      element.pause();
+      return { startTime, currentTime: element.currentTime, readyState: element.readyState };
+    });
+    expect(playback.readyState).toBeGreaterThanOrEqual(1);
+    expect(playback.currentTime).toBeGreaterThan(playback.startTime);
+    await expect(page.getByRole('button', { name: '开始分析' })).toBeDisabled();
+    expect(rendererErrors).toEqual([]);
+
+    await page.screenshot({ path: screenshot, fullPage: true });
+    await testInfo.attach('mov-smoke', { path: screenshot, contentType: 'image/png' });
+  } finally {
+    await writeFile(nativeLog, nativeStderr.join(''), { encoding: 'utf8', flag: 'a' }).catch(() => undefined);
+    if (existsSync(nativeLog)) await testInfo.attach('mov-electron-native-log', { path: nativeLog, contentType: 'text/plain' });
+    await stopElectron(page, browser, electronProcess);
+  }
+});
+
 test('real CUDA analysis, single-rally export, and final preview', async ({}, testInfo) => {
   test.slow();
-  for (const filePath of [sourceVideo, pythonPath, weightsPath, electronPath, path.join(ffmpegRoot, 'ffmpeg.exe'), path.join(ffmpegRoot, 'ffprobe.exe')]) {
+  for (const filePath of [sourceVideo, pythonPath, weightsPath, electronPath, ffmpegPath, ffprobePath]) {
     await requireFile(filePath);
   }
   await mkdir(fixtureDir, { recursive: true });
@@ -165,8 +323,8 @@ test('real CUDA analysis, single-rally export, and final preview', async ({}, te
         TTCUT_E2E_REVEAL_MARKER: revealMarker,
         TTCUT_PYTHON: pythonPath,
         TTCUT_TRACKNET_WEIGHTS: weightsPath,
-        TTCUT_FFMPEG: path.join(ffmpegRoot, 'ffmpeg.exe'),
-        TTCUT_FFPROBE: path.join(ffmpegRoot, 'ffprobe.exe'),
+        TTCUT_FFMPEG: ffmpegPath,
+        TTCUT_FFPROBE: ffprobePath,
       },
     });
     electronProcess.stderr?.setEncoding('utf8');
