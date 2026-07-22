@@ -1,20 +1,25 @@
 import { describe, expect, it } from 'vitest';
 import { messages } from '../src/renderer/i18n';
 
-describe('video input messages', () => {
-  it('names MP4 and MOV in the Chinese video picker', () => {
-    expect(messages('zh-CN').chooseVideo).toBe('选择 MP4 或 MOV 视频');
+const languageCases = [
+  { language: 'zh-CN', formats: 'MP4 或 MOV', chooseVideo: '选择 MP4 或 MOV 视频' },
+  { language: 'en', formats: 'MP4 or MOV', chooseVideo: 'Choose MP4 or MOV video' },
+] as const;
+
+describe.each(languageCases)('$language video input messages', ({ language, formats, chooseVideo }) => {
+  const copy = messages(language);
+
+  it.each([
+    ['selectDescription', copy.selectDescription],
+    ['chooseVideo', copy.chooseVideo],
+    ['dropVideo', copy.dropVideo],
+    ['invalidFile', copy.invalidFile],
+    ['errors.INVALID_INPUT', copy.errors.INVALID_INPUT],
+  ])('%s names both supported formats', (_key, value) => {
+    expect(value).toContain(formats);
   });
 
-  it('names MP4 and MOV in the Chinese invalid input error', () => {
-    expect(messages('zh-CN').errors.INVALID_INPUT).toContain('MP4 或 MOV');
-  });
-
-  it('names MP4 and MOV in the English video picker', () => {
-    expect(messages('en').chooseVideo).toBe('Choose MP4 or MOV video');
-  });
-
-  it('names MP4 and MOV in the English invalid input error', () => {
-    expect(messages('en').errors.INVALID_INPUT).toContain('MP4 or MOV');
+  it('keeps the required video picker wording', () => {
+    expect(copy.chooseVideo).toBe(chooseVideo);
   });
 });

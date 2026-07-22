@@ -59,6 +59,7 @@ describe('renderer settings updates', () => {
     Object.defineProperty(window, 'ttcut', { configurable: true, value: api });
 
     render(<App />);
+    expect(screen.getByText('.mp4 / .mov', { exact: true })).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: '设置' }));
 
     const batchCard = screen.getByRole('heading', { name: '推理批量' }).closest('article')!;

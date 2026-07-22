@@ -25,6 +25,9 @@ test("renders the TTcut product page", async () => {
   assert.doesNotMatch(visibleHtml, /releases\/tag\/v1\.0\.0/);
   assert.equal(visibleHtml.match(/>前往Github(?:\s|<)/g)?.length, 1);
   assert.match(visibleHtml, /href="https:\/\/github\.com\/WeiyePlayer\/TTcut"[^>]*>前往Github/);
+  assert.match(visibleHtml, /选择单个 MP4 或 MOV 文件/);
+  assert.match(visibleHtml, /当前一次处理单个 MP4 或 MOV 视频/);
+  assert.match(visibleHtml, /match_ALcut\.mp4/);
   assert.doesNotMatch(visibleHtml, /1-193\.mp4/);
   assert.doesNotMatch(visibleHtml, /板数.*真实击球次数/);
   assert.doesNotMatch(visibleHtml, /回合前后.*都留一点呼吸/);
