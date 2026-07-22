@@ -41,10 +41,16 @@ def _cv2():
     return cv2
 
 
-def validate_video_path(value: str | Path) -> Path:
+def video_container_for_path(value: str | Path) -> str:
     path = Path(value).expanduser()
     if path.suffix.lower() not in SUPPORTED_VIDEO_SUFFIXES:
         raise VideoError("Only one MP4 or MOV video is supported.")
+    return path.suffix.lower().lstrip(".")
+
+
+def validate_video_path(value: str | Path) -> Path:
+    path = Path(value).expanduser()
+    video_container_for_path(path)
     if not path.is_file():
         raise VideoError(f"Video file does not exist: {path}")
     return path.resolve()

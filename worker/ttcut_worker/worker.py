@@ -6,15 +6,14 @@ import os
 import sys
 import traceback
 import uuid
-from pathlib import Path
 
 from .bounce import detect_bounce_frames
 from .calibration import TableCalibration
-from .errors import InvalidRequestError, WorkerError, WeightError
+from .errors import InvalidRequestError, VideoError, WorkerError, WeightError
 from .model import load_tracknet
 from .predictor import TrackNetPredictor
 from .rallies import group_rallies
-from .video import SUPPORTED_VIDEO_SUFFIXES
+from .video import video_container_for_path
 
 
 def emit(payload: dict) -> None:
@@ -32,8 +31,9 @@ def validate_request(value: object) -> dict:
             raise ValueError("device")
         if not isinstance(value["batch_size"], int) or isinstance(value["batch_size"], bool) or value["batch_size"] not in {4, 8, 12, 16}:
             raise ValueError("batch_size")
-        if not isinstance(value["video_path"], str) or Path(value["video_path"]).suffix.lower() not in SUPPORTED_VIDEO_SUFFIXES:
+        if not isinstance(value["video_path"], str):
             raise ValueError("video_path")
+        video_container_for_path(value["video_path"])
         calibration = value["calibration"]
         if not isinstance(calibration, dict) or set(calibration) != {"video_width", "video_height", "points"}:
             raise ValueError("calibration")
@@ -44,7 +44,7 @@ def validate_request(value: object) -> dict:
         points = calibration["points"]
         if not isinstance(points, dict) or set(points) != {"top_left", "top_right", "bottom_right", "bottom_left"}:
             raise ValueError("points")
-    except (KeyError, TypeError, ValueError) as exc:
+    except (KeyError, TypeError, ValueError, VideoError) as exc:
         raise InvalidRequestError("Analysis request fields are invalid.") from exc
     return value
 
@@ -103,7 +103,7 @@ def analyze(request: dict) -> dict:
             "variable_frame_rate": False,
             "video_codec": "unknown",
             "audio_codec": None,
-            "container": info.path.suffix.lower().lstrip("."),
+            "container": video_container_for_path(request["video_path"]),
             "frame_count": info.decoded_frame_count,
         },
         "rallies": normalized,
