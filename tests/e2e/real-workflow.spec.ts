@@ -136,7 +136,7 @@ test('real MOV probe, protocol streaming, and calibration playback', async ({}, 
 
   const movVideo = path.resolve(movSourceVideo!);
   expect(path.extname(movVideo).toLowerCase()).toBe('.mov');
-  for (const filePath of [movVideo, pythonPath, weightsPath, electronPath, ffmpegPath, ffprobePath]) {
+  for (const filePath of [movVideo, electronPath, ffmpegPath, ffprobePath]) {
     await requireFile(filePath);
   }
 
@@ -189,6 +189,13 @@ test('real MOV probe, protocol streaming, and calibration playback', async ({}, 
     page.on('console', (message) => {
       if (message.type() === 'error') rendererErrors.push(message.text());
     });
+    const mediaResponses: Array<{ url: string; status: number; headers: Record<string, string> }> = [];
+    page.on('response', (response) => {
+      if (!response.url().startsWith('ttcut-media://')) return;
+      void response.allHeaders().then((headers) => {
+        mediaResponses.push({ url: response.url(), status: response.status(), headers });
+      });
+    });
     await page.waitForLoadState('domcontentloaded');
 
     await expect(page.getByRole('heading', { name: '选择比赛视频' })).toBeVisible({ timeout: 60_000 });
@@ -234,22 +241,21 @@ test('real MOV probe, protocol streaming, and calibration playback', async ({}, 
     expect(videoState.width).toBe(probe.width);
     expect(videoState.height).toBe(probe.height);
 
-    const rangeResponse = await calibrationVideo.evaluate(async (element: HTMLVideoElement) => {
-      const response = await fetch(element.currentSrc || element.src, { headers: { Range: 'bytes=0-0' } });
-      const body = await response.arrayBuffer();
-      return {
-        status: response.status,
-        contentType: response.headers.get('content-type'),
-        contentRange: response.headers.get('content-range'),
-        contentLength: response.headers.get('content-length'),
-        bodyLength: body.byteLength,
-      };
-    });
-    expect(rangeResponse.status).toBe(206);
-    expect(rangeResponse.contentType).toBe('video/quicktime');
-    expect(rangeResponse.contentRange).toMatch(/^bytes 0-0\/[1-9]\d*$/);
-    expect(rangeResponse.contentLength).toBe('1');
-    expect(rangeResponse.bodyLength).toBe(1);
+    await expect.poll(
+      () => mediaResponses.some((response) => response.url === videoState.src && response.status === 206),
+      { timeout: 10_000 },
+    ).toBe(true);
+    const rangeResponse = mediaResponses.find(
+      (response) => response.url === videoState.src && response.status === 206,
+    );
+    expect(rangeResponse).toBeDefined();
+    expect(rangeResponse!.headers['content-type']).toBe('video/quicktime');
+    const contentRange = /^bytes (\d+)-(\d+)\/([1-9]\d*)$/.exec(rangeResponse!.headers['content-range'] ?? '');
+    expect(contentRange).not.toBeNull();
+    const [, rangeStart, rangeEnd, totalSize] = contentRange!;
+    expect(Number(rangeEnd)).toBeGreaterThanOrEqual(Number(rangeStart));
+    expect(Number(totalSize)).toBeGreaterThan(Number(rangeEnd));
+    expect(Number(rangeResponse!.headers['content-length'])).toBe(Number(rangeEnd) - Number(rangeStart) + 1);
 
     const playback = await calibrationVideo.evaluate(async (element: HTMLVideoElement) => {
       const startTime = element.currentTime;
