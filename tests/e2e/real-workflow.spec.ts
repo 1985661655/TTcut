@@ -175,7 +175,7 @@ test('real MOV probe, protocol streaming, and calibration playback', async ({}, 
         TTCUT_E2E_COMPONENTS_ROOT: isolatedComponents,
         TTCUT_E2E_VIDEO: movVideo,
         TTCUT_PYTHON: pythonPath,
-        TTCUT_TRACKNET_WEIGHTS: weightsPath,
+        TTCUT_TRACKNET_WEIGHTS: path.join(runRoot, 'missing-TrackNet_best.pt'),
         TTCUT_FFMPEG: ffmpegPath,
         TTCUT_FFPROBE: ffprobePath,
       },
@@ -198,6 +198,8 @@ test('real MOV probe, protocol streaming, and calibration playback', async ({}, 
     });
     await page.waitForLoadState('domcontentloaded');
 
+    await expect(page.getByRole('heading', { name: '设置', exact: true })).toBeVisible({ timeout: 60_000 });
+    await page.getByRole('button', { name: '自动剪辑' }).click();
     await expect(page.getByRole('heading', { name: '选择比赛视频' })).toBeVisible({ timeout: 60_000 });
     await expect(page.getByRole('button', { name: '选择 MP4 或 MOV 视频' })).toBeVisible();
 
