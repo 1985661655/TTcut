@@ -337,8 +337,7 @@ if [[ ! -x "$PYTHON_PATH" ]]; then
   exit 1
 fi
 if [[ ! -f "$WEIGHTS_PATH" ]]; then
-  show_error "找不到 TrackNet 权重：$WEIGHTS_PATH"
-  exit 1
+  log "警告: TrackNet 权重不存在，分析功能暂不可用：$WEIGHTS_PATH"
 fi
 if [[ ! -x "$FFMPEG_PATH" ]]; then
   show_error "找不到或无法执行 FFmpeg：$FFMPEG_PATH"

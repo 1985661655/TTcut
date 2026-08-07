@@ -308,7 +308,6 @@ describe('macOS launcher', () => {
     ['node_modules', 'PROJECT_DIR', '缺少 node_modules'],
     ['npm', 'NPM_PATH', '找不到或无法执行 npm'],
     ['Python', 'PYTHON_PATH', '找不到或无法执行 Python'],
-    ['TrackNet weights', 'WEIGHTS_PATH', '找不到 TrackNet 权重'],
     ['FFmpeg', 'FFMPEG_PATH', '找不到或无法执行 FFmpeg'],
     ['ffprobe', 'FFPROBE_PATH', '找不到或无法执行 ffprobe'],
   ] as const)('rejects missing %s before npm starts', (_name, key, message) => {
@@ -321,6 +320,20 @@ describe('macOS launcher', () => {
     expect(result.status).toBe(1);
     expect(result.stderr).toContain(message);
     expectNpmNotStarted(fixture);
+  });
+
+  macIt('starts when TrackNet weights are missing and logs that analysis is unavailable', async () => {
+    const fixture = makeFixture();
+    rmSync(fixture.weights);
+
+    const result = run(fixture);
+
+    expect(result.status).toBe(0);
+    await waitForFiles([fixture.npmCalls, `${fixture.capture}.weights`], 'npm startup without TrackNet weights');
+    expect(readFileSync(`${fixture.capture}.weights`, 'utf8').trim()).toBe(fixture.weights);
+    expect(readFileSync(join(fixture.logs, 'launcher.log'), 'utf8')).toContain(
+      'TrackNet 权重不存在，分析功能暂不可用',
+    );
   });
 
   macIt('starts npm from a path with spaces and Chinese characters and passes the runtime environment', async () => {
@@ -534,10 +547,6 @@ describe('macOS launcher', () => {
 
   macIt.each([
     ['configuration', (fixture: Fixture) => ({ TTCUT_LAUNCHER_CONFIG: join(fixture.root, 'missing.conf') })],
-    ['TrackNet weights', (fixture: Fixture) => {
-      rmSync(fixture.weights);
-      return {};
-    }],
     ['project directory', (fixture: Fixture) => {
       rmSync(fixture.project, { recursive: true });
       return {};
@@ -895,10 +904,6 @@ describe('macOS launcher installer', () => {
     }],
     ['npm', (fixture: InstallerFixture) => ({ TTCUT_NPM_PATH: join(fixture.root, 'missing npm') })],
     ['Python', (fixture: InstallerFixture) => ({ TTCUT_PYTHON_PATH: join(fixture.root, 'missing python') })],
-    ['TrackNet weights', (fixture: InstallerFixture) => {
-      rmSync(fixture.weights);
-      return {};
-    }],
     ['FFmpeg', (fixture: InstallerFixture) => ({ TTCUT_FFMPEG_PATH: join(fixture.root, 'missing ffmpeg') })],
     ['ffprobe', (fixture: InstallerFixture) => ({ TTCUT_FFPROBE_PATH: join(fixture.root, 'missing ffprobe') })],
   ] as const)('does not replace an existing app when %s is missing', (_name, makeFailure) => {
@@ -908,6 +913,19 @@ describe('macOS launcher installer', () => {
     expect(result.status).not.toBe(0);
     expect(result.stderr).toMatch(/[\u4e00-\u9fff]/);
     expect(readFileSync(join(fixture.appDestination, 'sentinel'), 'utf8')).toBe('keep this app');
+  });
+
+  macIt('installs when TrackNet weights are missing and preserves the configured path', () => {
+    const fixture = makeInstallerFixture();
+    rmSync(fixture.weights);
+
+    const result = install(fixture);
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stderr).toContain('TrackNet 权重不存在，分析功能暂不可用');
+    expect(readFileSync(join(fixture.appDestination, 'Contents/Resources/launcher.conf'), 'utf8')).toContain(
+      `WEIGHTS_PATH=${fixture.weights}`,
+    );
   });
 
   macIt('does not replace an existing app when icon conversion fails', () => {

@@ -187,7 +187,9 @@ icon_info=$(sips -g format -g pixelWidth -g pixelHeight "$ICON_SOURCE" 2>/dev/nu
 [[ -d "$PROJECT_DIR/node_modules" ]] || fail "项目缺少 node_modules：$PROJECT_DIR/node_modules"
 [[ -x "$NPM_PATH" ]] || fail "找不到或无法执行 npm：$NPM_PATH"
 [[ -x "$PYTHON_PATH" ]] || fail "找不到或无法执行 Python：$PYTHON_PATH"
-[[ -f "$WEIGHTS_PATH" ]] || fail "找不到 TrackNet 权重：$WEIGHTS_PATH"
+if [[ ! -f "$WEIGHTS_PATH" ]]; then
+  print -u2 -r -- "警告：TrackNet 权重不存在，分析功能暂不可用：$WEIGHTS_PATH"
+fi
 [[ -x "$FFMPEG_PATH" ]] || fail "找不到或无法执行 FFmpeg：$FFMPEG_PATH"
 [[ -x "$FFPROBE_PATH" ]] || fail "找不到或无法执行 ffprobe：$FFPROBE_PATH"
 [[ -d "$DESTINATION_PARENT" && -w "$DESTINATION_PARENT" ]] || fail "目标目录不存在或不可写：$DESTINATION_PARENT"
