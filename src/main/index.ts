@@ -8,7 +8,13 @@ import {
   protocol,
   shell,
 } from 'electron';
-import { analysisResultSchema, appSettingsSchema, calibrationSchema, cutSelectionSchema, historySummarySchema } from '../shared/contracts';
+import {
+  analysisResultSchema,
+  calibrationSchema,
+  cutSelectionSchema,
+  historySummarySchema,
+  inferenceBatchSizeSchema,
+} from '../shared/contracts';
 import { IPC } from '../shared/ipc';
 import { activateLatestAnalysis, startAnalysis, clearLatestAnalysis } from './analysis';
 import { componentSetupInfo, loadComponentCatalog } from './component-catalog';
@@ -20,9 +26,10 @@ import { getHistoryStore } from './history';
 import { clearMediaPaths, installMediaProtocol, registerMediaPath } from './media-protocol';
 import { probeVideo } from './probe';
 import { cancelAllTasks, cancelTask, hasActiveTasks } from './processes';
-import { loadSettings, saveSettings } from './settings';
+import { loadSettings, saveSettings, waitForPendingSettingsWrites } from './settings';
 import { handleSquirrelStartup } from './squirrel-startup';
 import { assertPlatformCompatible, getPlatformCompatibility } from './platform-compatibility';
+import { SUPPORTED_VIDEO_PICKER_EXTENSIONS, videoContainerForPath } from './video-format';
 
 const squirrelStartup = handleSquirrelStartup();
 
@@ -35,6 +42,8 @@ if (!squirrelStartup) {
 
 let mainWindow: BrowserWindow | null = null;
 let exitApproved = false;
+let quitReady = false;
+let quitPreparation: Promise<void> | null = null;
 
 function e2eHarnessEnabled(): boolean {
   return !app.isPackaged && process.env.TTCUT_E2E === '1';
@@ -43,7 +52,7 @@ function e2eHarnessEnabled(): boolean {
 if (e2eHarnessEnabled() && process.env.TTCUT_E2E_USER_DATA) {
   app.setPath('userData', path.resolve(process.env.TTCUT_E2E_USER_DATA));
 }
-if (e2eHarnessEnabled()) app.disableHardwareAcceleration();
+if (e2eHarnessEnabled() && process.env.TTCUT_E2E_ENABLE_GPU !== '1') app.disableHardwareAcceleration();
 
 function currentWindow(): BrowserWindow {
   if (!mainWindow || mainWindow.isDestroyed()) throw new Error('WINDOW_UNAVAILABLE');
@@ -51,7 +60,7 @@ function currentWindow(): BrowserWindow {
 }
 
 async function selectedVideo(filePath: string) {
-  if (path.extname(filePath).toLowerCase() !== '.mp4') throw new Error('INVALID_INPUT');
+  if (!videoContainerForPath(filePath)) throw new Error('INVALID_INPUT');
   const info = await stat(filePath);
   if (!info.isFile()) throw new Error('INVALID_INPUT');
   return {
@@ -84,7 +93,7 @@ function registerIpc(): void {
       logsPath: getLogDirectory(),
     };
   });
-  ipcMain.handle(IPC.settingsSave, (_event, value: unknown) => saveSettings(appSettingsSchema.parse(value)));
+  ipcMain.handle(IPC.settingsSave, (_event, value: unknown) => saveSettings(value));
   ipcMain.handle(IPC.componentsRefresh, () => inspectComponents());
   ipcMain.handle(IPC.componentsInstallAnalysis, async (_event, consent: unknown) => {
     await assertPlatformCompatible();
@@ -101,8 +110,8 @@ function registerIpc(): void {
       return selectedVideo(fixture);
     }
     const result = await dialog.showOpenDialog(currentWindow(), {
-      title: 'Select MP4 video', properties: ['openFile'],
-      filters: [{ name: 'MP4 video', extensions: ['mp4'] }],
+      title: 'Select MP4 or MOV video', properties: ['openFile'],
+      filters: [{ name: 'Select MP4 or MOV video', extensions: [...SUPPORTED_VIDEO_PICKER_EXTENSIONS] }],
     });
     return result.canceled || !result.filePaths[0] ? null : selectedVideo(result.filePaths[0]);
   });
@@ -125,6 +134,7 @@ function registerIpc(): void {
       videoPath: record.videoPath,
       calibration: calibrationSchema.parse(record.calibration),
       device,
+      batchSize: inferenceBatchSizeSchema.parse(record.batchSize),
     });
   });
   ipcMain.handle(IPC.exportStart, async (_event, value: unknown) => {
@@ -264,13 +274,19 @@ app.on('activate', () => {
   if (BrowserWindow.getAllWindows().length === 0) void createWindow();
 });
 
-app.on('before-quit', async (event) => {
-  if (!exitApproved && hasActiveTasks()) {
-    event.preventDefault();
-    exitApproved = true;
-    await cancelAllTasks();
+app.on('before-quit', (event) => {
+  if (quitReady) return;
+  event.preventDefault();
+  quitPreparation ??= (async () => {
+    if (hasActiveTasks()) {
+      exitApproved = true;
+      await cancelAllTasks();
+    }
+    await waitForPendingSettingsWrites();
+    quitReady = true;
     app.quit();
-  }
+  })();
+  void quitPreparation;
 });
 
 app.on('window-all-closed', () => {

@@ -1,9 +1,16 @@
 from __future__ import annotations
 
+from pathlib import Path
+
+import pytest
+
+from ttcut_worker import worker as worker_module
 from ttcut_worker.bounce import detect_bounce_frames
 from ttcut_worker.calibration import TableCalibration
+from ttcut_worker.errors import InvalidRequestError
 from ttcut_worker.rallies import group_rallies
 from ttcut_worker.types import TrajectoryPoint
+from ttcut_worker.video import VideoInfo
 from ttcut_worker.worker import validate_request
 
 
@@ -78,6 +85,7 @@ def valid_request():
         "task_id": "22222222-2222-4222-8222-222222222222",
         "video_path": "match.mp4",
         "device": "cpu",
+        "batch_size": 8,
         "calibration": {
             "video_width": 1280,
             "video_height": 720,
@@ -89,6 +97,75 @@ def valid_request():
             },
         },
     }
+
+
+@pytest.mark.parametrize("batch_size", [4, 8, 12, 16])
+def test_worker_request_accepts_supported_batch_sizes(batch_size):
+    request = valid_request()
+    request["batch_size"] = batch_size
+
+    assert validate_request(request) == request
+
+
+def test_worker_request_accepts_mov_video():
+    request = valid_request()
+    request["video_path"] = "IMG_7818.MOV"
+
+    assert validate_request(request) == request
+
+
+def test_worker_analysis_preserves_mov_container_for_symlink(tmp_path, monkeypatch):
+    target = tmp_path / "actual.mkv"
+    target.write_bytes(b"video")
+    selected = tmp_path / "selected.MOV"
+    selected.symlink_to(target)
+    request = valid_request()
+    request["video_path"] = str(selected)
+
+    class Predictor:
+        def predict(self, value, progress_callback):
+            return (
+                [],
+                VideoInfo(
+                    path=Path(value).resolve(),
+                    width=1280,
+                    height=720,
+                    fps=30.0,
+                    metadata_frame_count=1,
+                    decoded_frame_count=1,
+                    duration=1 / 30,
+                ),
+                None,
+            )
+
+    monkeypatch.setenv("TTCUT_TRACKNET_WEIGHTS", "weights.keras")
+    monkeypatch.setattr(worker_module, "emit", lambda payload: None)
+    monkeypatch.setattr(worker_module, "load_tracknet", lambda *args: object())
+    monkeypatch.setattr(worker_module, "TrackNetPredictor", lambda *args, **kwargs: Predictor())
+    monkeypatch.setattr(worker_module, "detect_bounce_frames", lambda points, calibration: [])
+    monkeypatch.setattr(worker_module, "group_rallies", lambda bounce_frames, points: [])
+
+    result = worker_module.analyze(validate_request(request))
+
+    assert result["video"]["path"] == str(target.resolve())
+    assert result["video"]["container"] == "mov"
+
+
+def test_worker_request_rejects_unsupported_batch_size():
+    request = valid_request()
+    request["batch_size"] = 6
+
+    with pytest.raises(InvalidRequestError, match="fields"):
+        validate_request(request)
+
+
+@pytest.mark.parametrize("batch_size", [True, False])
+def test_worker_request_rejects_boolean_batch_sizes(batch_size):
+    request = valid_request()
+    request["batch_size"] = batch_size
+
+    with pytest.raises(InvalidRequestError, match="fields"):
+        validate_request(request)
 
 
 def test_worker_request_rejects_unknown_fields():

@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
-import type { TTcutApi, AppEvent } from '../shared/api';
-import type { AppSettings, Calibration, CutSelectionV1 } from '../shared/contracts';
+import type { TTcutApi, AppEvent, AnalysisStartInput } from '../shared/api';
+import type { AppSettings, CutSelectionV1 } from '../shared/contracts';
 import { IPC } from '../shared/ipc';
 
 const api: TTcutApi = {
@@ -13,7 +13,7 @@ const api: TTcutApi = {
   pathForDroppedFile: (file: File) => webUtils.getPathForFile(file),
   acceptDroppedVideo: (path: string) => ipcRenderer.invoke(IPC.videoAcceptDrop, path),
   probeVideo: (path: string) => ipcRenderer.invoke(IPC.videoProbe, path),
-  startAnalysis: (input: { videoPath: string; calibration: Calibration; device: 'auto' | 'cuda' | 'cpu' }) => (
+  startAnalysis: (input: AnalysisStartInput) => (
     ipcRenderer.invoke(IPC.analysisStart, input)
   ),
   startExport: (selection: CutSelectionV1) => ipcRenderer.invoke(IPC.exportStart, selection),

@@ -37,7 +37,7 @@ const features = [
 const steps = [
   {
     label: "选择视频",
-    copy: "选择一个 MP4 文件。TTcut 会先检查视频是否可读取，并显示时长、画面尺寸与帧率。",
+    copy: "选择单个 MP4 或 MOV 文件。TTcut 会先检查视频是否可读取，并显示时长、画面尺寸与帧率。",
   },
   {
     label: "标定球桌",
@@ -56,7 +56,7 @@ const steps = [
 const faqs = [
   {
     question: "TTcut 支持什么视频？",
-    answer: "当前一次处理一个 MP4 视频。拖入多个文件或其他格式时，软件会提示重新选择。",
+    answer: "当前一次处理单个 MP4 或 MOV 视频。拖入多个文件或其他格式时，软件会提示重新选择。",
   },
   {
     question: "使用时必须联网吗？",
@@ -64,7 +64,7 @@ const faqs = [
   },
   {
     question: "导出文件保存在哪里？",
-    answer: "保存在原视频所在目录。例如 match.mp4 会导出为 match_ttcut.mp4；同名文件已存在时会自动添加编号。",
+    answer: "保存在原视频所在目录。例如 match.mp4 会导出为 match_ALcut.mp4；同名文件已存在时会自动添加编号。",
   },
   {
     question: "Windows 为什么提示未知发布者？",

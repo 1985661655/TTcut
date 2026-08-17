@@ -22,7 +22,7 @@ TTcut 是一款面向乒乓球爱好者的本地乒乓球视频自动剪辑工�
 
 ### 1. 选择视频与标定球桌
 
-- 在“自动剪辑”中选择或拖入一个 `.mp4` 文件。
+- 在“自动剪辑”中选择或拖入单个 `.mp4` 或 `.mov` 文件。
 - 使用视频进度条选择清晰画面。
 - 按“左上、右上、右下、左下”的顺序点击球桌四角；编号点可以拖动修正。
 - 确认四点没有重合、越界或错序后，点击“开始分析”。
@@ -46,8 +46,9 @@ TTcut 是一款面向乒乓球爱好者的本地乒乓球视频自动剪辑工�
 
 在“设置”中选择回合前时间和回合后时间，然后返回剪辑模式开始导出。输出保存在原视频目录：
 
-- `match.mp4` 导出为 `match_ttcut.mp4`。
-- 名称已存在时依次使用 `match_ttcut_2.mp4`、`match_ttcut_3.mp4`，不会覆盖原文件或已有结果。
+- `match.mp4` 导出为 `match_ALcut.mp4`。
+- `IMG_7818.MOV` 导出为 `IMG_7818_ALcut.mp4`。
+- 名称已存在时依次使用 `match_ALcut_2.mp4`、`match_ALcut_3.mp4`，不会覆盖原文件或已有结果。
 - 导出完成后可直接播放成片，或使用“在文件夹中打开”定位文件。
 
 ### 5. 历史剪辑
@@ -76,14 +77,14 @@ TTcut 是一款面向乒乓球爱好者的本地乒乓球视频自动剪辑工�
 
 视频处理组件采用固定的 FFmpeg/ffprobe Windows x64 构建，负责：
 
-- 验证 MP4、时长、分辨率、帧率、音视频流和关键帧。
+- 接受 MP4/MOV 扩展名，并通过 ffprobe 验证时长、分辨率、帧率、音视频流和关键帧。
 - 根据回合边界生成剪辑片段并合并。
 - 满足安全切点条件时尝试流复制，否则执行一次准确重编码。
 - 保留分辨率、方向、宽高比和色彩信息，并校验输出时长、音画同步和可播放性。
 
 ## 从源码运行
 
-要求 Windows x64、Node.js 22、npm 10。安装依赖并启动：
+Windows 正式版要求 Windows x64、Node.js 22、npm 10。Apple Silicon macOS 当前只支持开发版运行，不提供安装包、签名、公证或应用内组件下载。
 
 ```powershell
 npm install
@@ -99,6 +100,56 @@ $env:TTCUT_FFMPEG='D:\path\to\ffmpeg.exe'
 $env:TTCUT_FFPROBE='D:\path\to\ffprobe.exe'
 npm start
 ```
+
+Apple Silicon macOS 开发环境示例：
+
+```zsh
+brew install node@22 ffmpeg python@3.12
+npm install
+python3.12 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install torch numpy opencv-python
+source scripts/dev-macos-env.example.zsh
+npm start
+```
+
+Apple Silicon macOS 还提供本机一键启动器，仅供本机开发使用：
+
+```zsh
+npm run install:macos-launcher
+open /Applications/TTcut.app
+```
+
+启动器仅供本机开发使用，后台启动不会弹出终端。默认路径为：
+
+```text
+TTCUT_PROJECT_DIR=/Users/xkkx6/Documents/TTcut-apple-silicon-dev-port
+TTCUT_PYTHON_PATH=/Users/xkkx6/Documents/TTcut-apple-silicon-dev-port/.venv312/bin/python
+TTCUT_WEIGHTS_PATH=/Users/xkkx6/Downloads/TrackNet_best.pt
+TTCUT_FFMPEG_PATH=/opt/homebrew/bin/ffmpeg
+TTCUT_FFPROBE_PATH=/opt/homebrew/bin/ffprobe
+TTCUT_NPM_PATH=/opt/homebrew/bin/npm
+TTCUT_APP_DESTINATION=/Applications/TTcut.app
+```
+
+因此启动器依赖上述项目目录、`.venv312`、`~/Downloads/TrackNet_best.pt` 和 Homebrew FFmpeg；默认 npm 是 `/opt/homebrew/bin/npm`，使用非 Homebrew npm 时请用 `TTCUT_NPM_PATH` 覆盖。日志写入 `~/Library/Logs/TTcut/launcher.log`。
+
+如果从其他 checkout 安装，请在该 checkout 根目录执行以下命令；将 `.venv312/bin/python` 替换为实际 venv 的 Python 路径：
+
+```zsh
+TTCUT_PROJECT_DIR="$PWD" TTCUT_PYTHON_PATH="$PWD/.venv312/bin/python" npm run install:macos-launcher
+```
+
+普通项目代码更新无需重装；只有启动器脚本、安装器本身、图标、`Info.plist` 生成逻辑或任何配置路径改变时，才需要重新运行 `npm run install:macos-launcher`。安装命令默认会安全替换现有的 `/Applications/TTcut.app`；需要保留同名 App 时，请用 `TTCUT_APP_DESTINATION` 指向其他路径。删除启动器可使用：
+
+```zsh
+rm -rf /Applications/TTcut.app
+```
+
+如需自定义路径，可设置 `TTCUT_PROJECT_DIR`、`TTCUT_PYTHON_PATH`、`TTCUT_WEIGHTS_PATH`、`TTCUT_FFMPEG_PATH`、`TTCUT_FFPROBE_PATH`、`TTCUT_NPM_PATH` 或 `TTCUT_APP_DESTINATION`。
+
+Mac 开发版会优先读取 `TTCUT_PYTHON`、`TTCUT_TRACKNET_WEIGHTS`、`TTCUT_FFMPEG` 和 `TTCUT_FFPROBE`。如果没有设置 FFmpeg 变量，会尝试 Apple Silicon Homebrew 的 `/opt/homebrew/bin/ffmpeg` 和 `/opt/homebrew/bin/ffprobe`。
 
 验证与构建：
 
@@ -127,9 +178,10 @@ npm run test:e2e
 
 ## 已知限制
 
-- 当前只接受单个 MP4 视频。
+- 当前一次可处理单个 MP4 或 MOV 视频。
 - 板数是弹跳代理值，不是真实击球计数。
-- 支持 Windows 10 22H2 x64（build 19045）和 Windows 11 x64（Client build 22000 及以上）；不支持旧版 Windows 10、x86、ARM64 和 Windows Server。
+- 正式发布版支持 Windows 10 22H2 x64（build 19045）和 Windows 11 x64（Client build 22000 及以上）；不支持旧版 Windows 10、x86、ARM64 和 Windows Server。
+- 开发版可在 Apple Silicon macOS 上使用本机 Python、TrackNet 权重和 FFmpeg 跑通；暂不支持 Intel Mac、`.dmg` 分发、签名公证或应用内组件下载。
 
 ## 许可
 

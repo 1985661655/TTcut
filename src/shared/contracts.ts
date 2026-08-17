@@ -4,9 +4,14 @@ export const DEVICE_VALUES = ['auto', 'cuda', 'cpu'] as const;
 export const PRE_ROLL_VALUES = [1.5, 2.5, 5] as const;
 export const POST_ROLL_VALUES = [0.5, 1, 2, 4] as const;
 export const HIGHLIGHT_VALUES = [3, 5, 7] as const;
+export const INFERENCE_BATCH_VALUES = [4, 8, 12, 16] as const;
 
 const finiteNumber = z.number().finite();
 const point = z.tuple([finiteNumber, finiteNumber]);
+
+export const inferenceBatchSizeSchema = z.union(
+  INFERENCE_BATCH_VALUES.map((value) => z.literal(value)),
+);
 
 export const calibrationSchema = z.object({
   video_width: z.number().int().positive(),
@@ -25,6 +30,7 @@ export const analysisRequestSchema = z.object({
   video_path: z.string().min(1),
   device: z.enum(DEVICE_VALUES),
   calibration: calibrationSchema,
+  batch_size: inferenceBatchSizeSchema,
 }).strict();
 
 export const videoMetadataSchema = z.object({
@@ -37,7 +43,7 @@ export const videoMetadataSchema = z.object({
   variable_frame_rate: z.boolean(),
   video_codec: z.string().min(1),
   audio_codec: z.string().nullable(),
-  container: z.literal('mp4'),
+  container: z.enum(['mp4', 'mov']),
   frame_count: z.number().int().positive().nullable().optional(),
   average_bitrate: z.number().int().positive().nullable().optional(),
   audio_bitrate: z.number().int().positive().nullable().optional(),
@@ -125,6 +131,7 @@ export const appSettingsSchema = z.object({
   language: z.enum(['zh-CN', 'en']),
   pre_roll_seconds: z.union(PRE_ROLL_VALUES.map((value) => z.literal(value))),
   post_roll_seconds: z.union(POST_ROLL_VALUES.map((value) => z.literal(value))),
+  inference_batch_size: inferenceBatchSizeSchema,
 }).strict();
 
 export const historySourceSchema = z.object({
@@ -159,7 +166,7 @@ export const componentStatusSchema = z.object({
     available: z.boolean(),
     version: z.string().nullable(),
     path: z.string().nullable(),
-    acceleration: z.enum(['cuda', 'cpu', 'unavailable']),
+    acceleration: z.enum(['cuda', 'mps', 'cpu', 'unavailable']),
     detail: z.string().nullable(),
   }).strict(),
   media: z.object({
@@ -196,7 +203,7 @@ export const platformCompatibilitySchema = z.object({
   platform: z.string().min(1),
   architecture: z.string().min(1),
   build_number: z.number().int().positive().nullable(),
-  installation_type: z.enum(['Client', 'Server', 'Unknown']),
+  installation_type: z.enum(['Client', 'Server', 'macOS', 'Unknown']),
 }).strict();
 
 export type Calibration = z.infer<typeof calibrationSchema>;
@@ -206,6 +213,7 @@ export type Rally = z.infer<typeof rallySchema>;
 export type AnalysisResultV1 = z.infer<typeof analysisResultSchema>;
 export type WorkerEventV1 = z.infer<typeof workerEventSchema>;
 export type CutSelectionV1 = z.infer<typeof cutSelectionSchema>;
+export type InferenceBatchSize = z.infer<typeof inferenceBatchSizeSchema>;
 export type AppSettings = z.infer<typeof appSettingsSchema>;
 export type HistorySource = z.infer<typeof historySourceSchema>;
 export type HistoryRecordV1 = z.infer<typeof historyRecordSchema>;

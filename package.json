@@ -8,6 +8,7 @@
   "main": ".vite/build/main.js",
   "scripts": {
     "start": "electron-forge start",
+    "install:macos-launcher": "zsh scripts/install-macos-launcher.zsh",
     "stage:worker": "node scripts/stage-worker.mjs",
     "stage:release": "node scripts/stage-worker.mjs && node scripts/generate-release-metadata.mjs",
     "package": "node scripts/stage-worker.mjs && node scripts/generate-release-metadata.mjs && electron-forge package --arch=x64",

@@ -213,7 +213,9 @@ function RallyPreviewDialog({ video, videoDuration, rally, translations, onClose
 
 export function App() {
   const [bootstrap, setBootstrap] = useState<BootstrapData | null>(null);
-  const [settings, setSettings] = useState<AppSettings>({ language: 'zh-CN', pre_roll_seconds: 2.5, post_roll_seconds: 2 });
+  const [settings, setSettings] = useState<AppSettings>({ language: 'zh-CN', pre_roll_seconds: 2.5, post_roll_seconds: 2, inference_batch_size: 4 });
+  const settingsRef = useRef(settings);
+  const persistedSettingsRef = useRef(settings);
   const [view, setView] = useState<View>('auto');
   const [step, setStep] = useState<Step>('select');
   const [video, setVideo] = useState<SelectedVideo | null>(null);
@@ -246,14 +248,29 @@ export function App() {
   const platformDetail = !bootstrap
     ? ''
     : platformSupported
-      ? interpolate(t.platformSupportedDetail, { build: bootstrap.platformCompatibility.build_number ?? '—' })
+      ? bootstrap.platformCompatibility.platform === 'darwin'
+        ? t.platformMacSupportedDetail
+        : interpolate(t.platformSupportedDetail, { build: bootstrap.platformCompatibility.build_number ?? '—' })
       : bootstrap.platformCompatibility.reason === 'probe_failed'
         ? t.platformProbeFailedDetail
-        : t.platformUnsupportedDetail;
+        : bootstrap.platformCompatibility.platform === 'darwin'
+          ? t.platformMacUnsupportedDetail
+          : t.platformUnsupportedDetail;
+  const accelerationLabel = bootstrap?.components.analysis.acceleration === 'cuda'
+    ? t.gpu
+    : bootstrap?.components.analysis.acceleration === 'mps'
+      ? t.appleGpu
+      : bootstrap?.components.analysis.acceleration === 'cpu'
+        ? t.cpu
+        : t.unavailable;
 
   useEffect(() => {
+    let active = true;
     void window.ttcut.bootstrap().then((data) => {
+      if (!active) return;
       setBootstrap(data);
+      persistedSettingsRef.current = data.settings;
+      settingsRef.current = data.settings;
       setSettings(data.settings);
       if (data.platformCompatibility.status !== 'supported' || !data.components.analysis.available || !data.components.media.available) {
         setView('settings');
@@ -304,7 +321,11 @@ export function App() {
       }
     });
     const removeClose = window.ttcut.onCloseRequested(() => setCloseDialog(true));
-    return () => { removeTask(); removeClose(); };
+    return () => {
+      active = false;
+      removeTask();
+      removeClose();
+    };
   }, []);
 
   const reset = useCallback(() => {
@@ -339,7 +360,7 @@ export function App() {
     if (!video || !metadata || !calibrationValue || calibrationIssue || !platformSupported || !bootstrap?.components.analysis.available) return;
     setStep('analyzing'); setProgress({ percent: 0, stage: 'load_model' });
     try {
-      setActiveTask(await window.ttcut.startAnalysis({ videoPath: video.path, calibration: calibrationValue, device: 'auto' }));
+      setActiveTask(await window.ttcut.startAnalysis({ videoPath: video.path, calibration: calibrationValue, device: 'auto', batchSize: settings.inference_batch_size }));
     } catch (caught) {
       setError({ code: errorCode(caught) }); setStep('error');
     }
@@ -360,20 +381,40 @@ export function App() {
     }
   };
 
-  const changeLanguage = async (language: Language) => {
-    if (language === settings.language) return;
-    setLanguageTransition(true);
-    await new Promise((resolve) => setTimeout(resolve, 160));
-    const next = await window.ttcut.saveSettings({ ...settings, language });
+  const saveSettingsPartial = (partial: Partial<AppSettings>): Promise<boolean> => {
+    const next = { ...settingsRef.current, ...partial };
+    settingsRef.current = next;
     setSettings(next);
-    document.documentElement.lang = language;
-    await new Promise((resolve) => setTimeout(resolve, 160));
-    setLanguageTransition(false);
+    return window.ttcut.saveSettings(next).then(
+      (saved) => {
+        persistedSettingsRef.current = saved;
+        if (settingsRef.current === next) {
+          settingsRef.current = saved;
+          setSettings(saved);
+          setToast(null);
+        }
+        return true;
+      },
+      () => {
+        if (settingsRef.current === next) {
+          const persisted = persistedSettingsRef.current;
+          settingsRef.current = persisted;
+          setSettings(persisted);
+          setToast(messages(persisted.language).settingsSaveFailed);
+        }
+        return false;
+      },
+    );
   };
 
-  const saveRolls = async (partial: Partial<AppSettings>) => {
-    const next = await window.ttcut.saveSettings({ ...settings, ...partial });
-    setSettings(next);
+  const changeLanguage = async (language: Language) => {
+    if (language === settingsRef.current.language) return;
+    setLanguageTransition(true);
+    await new Promise((resolve) => setTimeout(resolve, 160));
+    const saved = await saveSettingsPartial({ language });
+    if (saved) document.documentElement.lang = language;
+    await new Promise((resolve) => setTimeout(resolve, 160));
+    setLanguageTransition(false);
   };
 
   const loadHistory = async () => {
@@ -515,27 +556,31 @@ export function App() {
               <article className="card setting-card">
                 <div><h2>{t.language}</h2></div>
                 <div className="segmented">
-                  <button className={settings.language === 'zh-CN' ? 'selected' : ''} onClick={() => void changeLanguage('zh-CN')}>{t.chinese}</button>
-                  <button className={settings.language === 'en' ? 'selected' : ''} onClick={() => void changeLanguage('en')}>{t.english}</button>
+                  <button className={settings.language === 'zh-CN' ? 'selected' : ''} disabled={!bootstrap} onClick={() => void changeLanguage('zh-CN')}>{t.chinese}</button>
+                  <button className={settings.language === 'en' ? 'selected' : ''} disabled={!bootstrap} onClick={() => void changeLanguage('en')}>{t.english}</button>
                 </div>
               </article>
               <article className="card setting-card platform-card">
                 <div><h2>{t.platformCompatibility}</h2><p>{platformDetail}</p></div>
                 <span className={`status ${platformSupported ? 'ok' : 'blocked'}`}>{platformSupported ? t.platformSupported : t.platformUnsupported}</span>
               </article>
+              <article className="card timing-setting-card batch-setting-card">
+                <div><h2>{t.inferenceBatch}</h2><p>{t.inferenceBatchDetail}</p></div>
+                <div className="choice-row four">{([4, 8, 12, 16] as const).map((value, index) => <button aria-pressed={settings.inference_batch_size === value} className={settings.inference_batch_size === value ? 'selected' : ''} disabled={!bootstrap} key={value} onClick={() => void saveSettingsPartial({ inference_batch_size: value })}><strong>{[t.batchLowMemory, t.batchStandard, t.batchLarge, t.batchMaximum][index]}</strong><span>{value}</span></button>)}</div>
+              </article>
               <article className="card timing-setting-card">
                 <div><h2>{t.preRoll}</h2><p>{t.preRollSettingDetail}</p></div>
-                <div className="choice-row">{([1.5, 2.5, 5] as const).map((value, index) => <button className={settings.pre_roll_seconds === value ? 'selected' : ''} key={value} onClick={() => void saveRolls({ pre_roll_seconds: value })}><strong>{[t.short, t.medium, t.long][index]}</strong><span>{value} s</span></button>)}</div>
+                <div className="choice-row">{([1.5, 2.5, 5] as const).map((value, index) => <button className={settings.pre_roll_seconds === value ? 'selected' : ''} disabled={!bootstrap} key={value} onClick={() => void saveSettingsPartial({ pre_roll_seconds: value })}><strong>{[t.short, t.medium, t.long][index]}</strong><span>{value} s</span></button>)}</div>
               </article>
               <article className="card timing-setting-card">
                 <div><h2>{t.postRoll}</h2><p>{t.postRollSettingDetail}</p></div>
-                <div className="choice-row four">{([0.5, 1, 2, 4] as const).map((value, index) => <button className={settings.post_roll_seconds === value ? 'selected' : ''} key={value} onClick={() => void saveRolls({ post_roll_seconds: value })}><strong>{[t.veryShort, t.short, t.medium, t.long][index]}</strong><span>{value} s</span></button>)}</div>
+                <div className="choice-row four">{([0.5, 1, 2, 4] as const).map((value, index) => <button className={settings.post_roll_seconds === value ? 'selected' : ''} disabled={!bootstrap} key={value} onClick={() => void saveSettingsPartial({ post_roll_seconds: value })}><strong>{[t.veryShort, t.short, t.medium, t.long][index]}</strong><span>{value} s</span></button>)}</div>
               </article>
               <article className="card components-card">
                 <h2>{t.components}</h2>
                 <div className="component-row"><div><strong>{t.analysisComponent}</strong><span>{bootstrap?.components.analysis.version ?? t.unavailable}</span>{bootstrap?.components.analysis.path && <span>{t.componentPath}: {bootstrap.components.analysis.path}</span>}</div><span className={`status ${bootstrap?.components.analysis.available ? 'ok' : ''}`}>{bootstrap?.components.analysis.available ? t.available : t.unavailable}</span></div>
                 <div className="component-row"><div><strong>{t.mediaComponent}</strong><span>{bootstrap?.components.media.version ?? t.unavailable}</span>{bootstrap?.components.media.path && <span>{t.componentPath}: {bootstrap.components.media.path}</span>}</div><span className={`status ${bootstrap?.components.media.available ? 'ok' : ''}`}>{bootstrap?.components.media.available ? t.available : t.unavailable}</span></div>
-                <div className="component-row"><div><strong>{t.acceleration}</strong><span>{bootstrap?.components.analysis.acceleration === 'cuda' ? t.gpu : bootstrap?.components.analysis.acceleration === 'cpu' ? t.cpu : t.unavailable}</span></div></div>
+                <div className="component-row"><div><strong>{t.acceleration}</strong><span>{accelerationLabel}</span></div></div>
               </article>
               <article className="card setup-card">
                 <div className="setup-heading"><div><h2>{t.setupTitle}</h2><p>{t.setupDetail}</p></div><button className="secondary" disabled={Boolean(setupTask)} onClick={() => void refreshComponents()}>{t.refreshComponents}</button></div>
@@ -553,6 +598,9 @@ export function App() {
                     )}
                     {bootstrap?.componentSetup.media_offer && !bootstrap.components.media.available && (
                       <div className="setup-option"><div><strong>{t.mediaOffer}</strong><span>{t.mediaOfferDetail}</span><small>{interpolate(t.downloadSize, { size: fileSize(bootstrap.componentSetup.media_offer.download_size_bytes) })}</small></div><div><button className="text-button" onClick={() => void window.ttcut.openExternalUrl(bootstrap.componentSetup.media_offer!.license_url)}>{t.viewLicense}</button><button className="primary" disabled={!platformSupported || !bootstrap.componentSetup.media_offer.available_for_download} onClick={() => void installMediaComponent()}>{t.consentInstall}</button></div></div>
+                    )}
+                    {!bootstrap?.componentSetup.analysis_offer && !bootstrap?.componentSetup.media_offer && (
+                      <div className="setup-option"><div><strong>{t.components}</strong><span>{t.developmentComponentsHint}</span></div></div>
                     )}
                   </div>
                 )}
@@ -617,7 +665,7 @@ export function App() {
                     });
                   }}
                 >
-                  <span className="drop-icon">＋</span><strong>{t.chooseVideo}</strong><span>{t.dropVideo}</span><small>.mp4</small>
+                  <span className="drop-icon">＋</span><strong>{t.chooseVideo}</strong><span>{t.dropVideo}</span><small>.mp4 / .mov</small>
                 </button>
               </div>
             )}

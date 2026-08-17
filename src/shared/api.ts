@@ -7,6 +7,7 @@ import type {
   CutSelectionV1,
   ExportResult,
   HistorySummaryV1,
+  InferenceBatchSize,
   PlatformCompatibility,
   TaskProgress,
   VideoMetadata,
@@ -40,6 +41,13 @@ export type HistoryOpenResultV1 = {
   analysis: AnalysisResultV1;
 };
 
+export type AnalysisStartInput = {
+  videoPath: string;
+  calibration: Calibration;
+  device: 'auto' | 'cuda' | 'cpu';
+  batchSize: InferenceBatchSize;
+};
+
 export interface TTcutApi {
   bootstrap(): Promise<BootstrapData>;
   saveSettings(settings: AppSettings): Promise<AppSettings>;
@@ -50,7 +58,7 @@ export interface TTcutApi {
   pathForDroppedFile(file: File): string;
   acceptDroppedVideo(path: string): Promise<SelectedVideo>;
   probeVideo(path: string): Promise<VideoMetadata>;
-  startAnalysis(input: { videoPath: string; calibration: Calibration; device: 'auto' | 'cuda' | 'cpu' }): Promise<string>;
+  startAnalysis(input: AnalysisStartInput): Promise<string>;
   startExport(selection: CutSelectionV1): Promise<string>;
   listHistory(): Promise<HistorySummaryV1[]>;
   openHistory(id: string): Promise<HistoryOpenResultV1>;

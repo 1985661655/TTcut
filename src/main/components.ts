@@ -5,18 +5,21 @@ import type { ComponentStatus } from '../shared/contracts';
 import { sha256File } from './component-assets';
 import { loadComponentCatalog } from './component-catalog';
 import { runProcess } from './processes';
+import { executableName, homebrewMediaCandidates, mediaExecutableNames } from './platform-paths';
+import {
+  ANALYSIS_RUNTIME_PROBE,
+  parseRuntimeInfo,
+  validateRuntimeInfo,
+  type AnalysisAcceleration,
+  type AnalysisRuntimeValidation,
+} from './analysis-runtime';
 import {
   ACTIVE_RUNTIME_MANIFEST,
-  ANALYSIS_PYTHON_VERSION,
   ANALYSIS_RUNTIME_ID,
-  ANALYSIS_TORCH_VERSION,
+  analysisRuntimeDirectory,
   analysisRuntimePython,
-  expectedTorchVersion,
   type AnalysisRuntimeVariant,
 } from './runtime-layout';
-
-const ANALYSIS_NUMPY_VERSION = '2.5.1';
-const ANALYSIS_OPENCV_VERSION = '4.13.0';
 
 async function exists(value: string): Promise<boolean> {
   try {
@@ -62,16 +65,22 @@ function requestedVariants(device: 'auto' | 'cuda' | 'cpu'): AnalysisRuntimeVari
 
 async function runtimeCandidates(device: 'auto' | 'cuda' | 'cpu'): Promise<RuntimeCandidate[]> {
   const managedRoot = managedComponentsRoot();
+  const pythonExecutable = executableName('python');
   const allowDevelopmentFallbacks = !app.isPackaged && !(
     process.env.TTCUT_E2E === '1' && process.env.TTCUT_E2E_DISABLE_DEV_COMPONENTS === '1'
   );
   const candidates: RuntimeCandidate[] = [];
   if (process.env.TTCUT_PYTHON) candidates.push({ python: process.env.TTCUT_PYTHON, variant: 'external' });
   for (const variant of requestedVariants(device)) {
-    candidates.push({ python: path.join(managedRoot, ...analysisRuntimePython(variant).split('/')), variant });
+    candidates.push({
+      python: process.platform === 'win32'
+        ? path.join(managedRoot, ...analysisRuntimePython(variant).split('/'))
+        : path.join(managedRoot, ...analysisRuntimeDirectory(variant).split('/'), pythonExecutable),
+      variant,
+    });
   }
   if (allowDevelopmentFallbacks) {
-    candidates.push({ python: path.join(managedRoot, 'python-3.12.13', 'python.exe'), variant: 'legacy' });
+    candidates.push({ python: path.join(managedRoot, 'python-3.12.13', pythonExecutable), variant: 'legacy' });
   }
   const seen = new Set<string>();
   const available: RuntimeCandidate[] = [];
@@ -100,16 +109,20 @@ async function resolveWeights(): Promise<string | null> {
 export async function resolveComponents(device: 'auto' | 'cuda' | 'cpu' = 'auto'): Promise<ComponentPaths> {
   const managedRoot = managedComponentsRoot();
   const runtimes = await runtimeCandidates(device);
+  const mediaNames = mediaExecutableNames();
+  const homebrew = homebrewMediaCandidates();
   const media = await Promise.all([
     firstExisting([
       process.env.TTCUT_FFMPEG,
-      path.join(managedRoot, 'ffmpeg-8.1', 'bin', 'ffmpeg.exe'),
-      resource('resources', 'ffmpeg', 'ffmpeg.exe'),
+      path.join(managedRoot, 'ffmpeg-8.1', 'bin', mediaNames.ffmpeg),
+      resource('resources', 'ffmpeg', mediaNames.ffmpeg),
+      ...homebrew.ffmpeg,
     ].filter((item): item is string => Boolean(item))),
     firstExisting([
       process.env.TTCUT_FFPROBE,
-      path.join(managedRoot, 'ffmpeg-8.1', 'bin', 'ffprobe.exe'),
-      resource('resources', 'ffmpeg', 'ffprobe.exe'),
+      path.join(managedRoot, 'ffmpeg-8.1', 'bin', mediaNames.ffprobe),
+      resource('resources', 'ffmpeg', mediaNames.ffprobe),
+      ...homebrew.ffprobe,
     ].filter((item): item is string => Boolean(item))),
   ]);
   return {
@@ -140,7 +153,7 @@ export async function validateAnalysisComponent(
   python: string,
   weights: string,
   expectedVariant?: AnalysisRuntimeVariant,
-): Promise<{ version: string; pythonVersion: string; torchVersion: string; acceleration: 'cuda' | 'cpu'; variant: AnalysisRuntimeVariant }> {
+): Promise<AnalysisRuntimeValidation> {
   const catalog = await loadComponentCatalog();
   if (await sha256File(weights) !== catalog.tracknet_weight.sha256) throw new Error('TRACKNET_WEIGHT_HASH_MISMATCH');
   return validateAnalysisRuntime(python, expectedVariant);
@@ -149,32 +162,9 @@ export async function validateAnalysisComponent(
 export async function validateAnalysisRuntime(
   python: string,
   expectedVariant?: AnalysisRuntimeVariant,
-): Promise<{ version: string; pythonVersion: string; torchVersion: string; acceleration: 'cuda' | 'cpu'; variant: AnalysisRuntimeVariant }> {
-  const result = await runProcess(python, [
-    '-c',
-    'import cv2,json,numpy,sys,torch;print(json.dumps({"python":sys.version.split()[0],"torch":torch.__version__,"torch_cuda":torch.version.cuda,"opencv":cv2.__version__,"numpy":numpy.__version__,"acceleration":"cuda" if torch.cuda.is_available() else "cpu"}))',
-  ], { timeoutMs: 30_000 });
-  const value = JSON.parse(result.stdout.trim()) as Record<string, unknown>;
-  const acceptedTorchVersions = new Set<string>([
-    expectedTorchVersion('cpu'),
-    expectedTorchVersion('cu126'),
-  ]);
-  if (value.python !== ANALYSIS_PYTHON_VERSION || typeof value.torch !== 'string' || !acceptedTorchVersions.has(value.torch)) {
-    throw new Error('ANALYSIS_RUNTIME_VERSION_MISMATCH');
-  }
-  if (value.numpy !== ANALYSIS_NUMPY_VERSION || value.opencv !== ANALYSIS_OPENCV_VERSION) throw new Error('ANALYSIS_RUNTIME_VERSION_MISMATCH');
-  if (value.acceleration !== 'cuda' && value.acceleration !== 'cpu') throw new Error('ANALYSIS_RUNTIME_SELF_TEST_FAILED');
-  const inferredVariant: AnalysisRuntimeVariant = value.torch === expectedTorchVersion('cu126') ? 'cu126' : 'cpu';
-  if (expectedVariant && value.torch !== expectedTorchVersion(expectedVariant)) throw new Error('ANALYSIS_RUNTIME_VARIANT_MISMATCH');
-  if (expectedVariant === 'cpu' && (value.torch_cuda !== null || value.acceleration !== 'cpu')) throw new Error('ANALYSIS_RUNTIME_VARIANT_MISMATCH');
-  if (expectedVariant === 'cu126' && (value.torch_cuda !== '12.6' || value.acceleration !== 'cuda')) throw new Error('CUDA_RUNTIME_SELF_TEST_FAILED');
-  return {
-    version: `Python ${value.python} / PyTorch ${value.torch}`,
-    pythonVersion: String(value.python),
-    torchVersion: value.torch,
-    acceleration: value.acceleration,
-    variant: expectedVariant ?? inferredVariant,
-  };
+): Promise<AnalysisRuntimeValidation> {
+  const result = await runProcess(python, ['-c', ANALYSIS_RUNTIME_PROBE], { timeoutMs: 30_000 });
+  return validateRuntimeInfo(parseRuntimeInfo(result.stdout), expectedVariant);
 }
 
 export async function resolveUsableAnalysisComponents(device: 'auto' | 'cuda' | 'cpu'): Promise<ComponentPaths> {
@@ -204,7 +194,6 @@ function escapeRegExp(value: string): string {
 }
 
 export async function validateMediaComponent(ffmpeg: string, ffprobe: string): Promise<{ version: string }> {
-  const catalog = await loadComponentCatalog();
   const [version, probeVersion, build, encoders] = await Promise.all([
     runProcess(ffmpeg, ['-version'], { timeoutMs: 10_000 }),
     runProcess(ffprobe, ['-version'], { timeoutMs: 10_000 }),
@@ -213,22 +202,30 @@ export async function validateMediaComponent(ffmpeg: string, ffprobe: string): P
   ]);
   const firstLine = version.stdout.split(/\r?\n/)[0] ?? '';
   const probeFirstLine = probeVersion.stdout.split(/\r?\n/)[0] ?? '';
-  if (!firstLine.includes(catalog.ffmpeg.version_line) || !probeFirstLine.includes(catalog.ffmpeg.version_line)) {
+  if (process.platform === 'win32') {
+    const catalog = await loadComponentCatalog();
+    if (!firstLine.includes(catalog.ffmpeg.version_line) || !probeFirstLine.includes(catalog.ffmpeg.version_line)) {
+      throw new Error('MEDIA_RUNTIME_VERSION_MISMATCH');
+    }
+    const configuration = `${version.stdout}\n${build.stdout}`;
+    for (const flag of catalog.ffmpeg.required_build_flags) {
+      if (!configuration.includes(flag)) throw new Error(`MEDIA_RUNTIME_BUILD_FLAG_MISSING:${flag}`);
+    }
+    for (const encoder of catalog.ffmpeg.required_encoders) {
+      if (!new RegExp(`\\b${escapeRegExp(encoder)}\\b`).test(encoders.stdout)) throw new Error(`MEDIA_RUNTIME_ENCODER_MISSING:${encoder}`);
+    }
+    return { version: firstLine.replace(/^ffmpeg version\s+/, '') };
+  }
+  if (!firstLine.startsWith('ffmpeg version ') || !probeFirstLine.startsWith('ffprobe version ')) {
     throw new Error('MEDIA_RUNTIME_VERSION_MISMATCH');
   }
-  const configuration = `${version.stdout}\n${build.stdout}`;
-  for (const flag of catalog.ffmpeg.required_build_flags) {
-    if (!configuration.includes(flag)) throw new Error(`MEDIA_RUNTIME_BUILD_FLAG_MISSING:${flag}`);
-  }
-  for (const encoder of catalog.ffmpeg.required_encoders) {
-    if (!new RegExp(`\\b${escapeRegExp(encoder)}\\b`).test(encoders.stdout)) throw new Error(`MEDIA_RUNTIME_ENCODER_MISSING:${encoder}`);
-  }
+  if (!/\blibx264\b/.test(encoders.stdout)) throw new Error('MEDIA_RUNTIME_ENCODER_MISSING:libx264');
   return { version: firstLine.replace(/^ffmpeg version\s+/, '') };
 }
 
 export async function inspectComponentPaths(paths: ComponentPaths): Promise<ComponentStatus> {
   let analysisVersion: string | null = null;
-  let acceleration: 'cuda' | 'cpu' | 'unavailable' = 'unavailable';
+  let acceleration: AnalysisAcceleration | 'unavailable' = 'unavailable';
   let analysisDetail: string | null = null;
   if (paths.python && paths.weights) {
     try {

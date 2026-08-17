@@ -88,6 +88,12 @@ def create_tracknet(seq_len: int, bg_mode: str):
     return TrackNet()
 
 
+def mps_available(torch) -> bool:
+    backends = getattr(torch, "backends", None)
+    mps = getattr(backends, "mps", None)
+    return bool(mps and mps.is_available())
+
+
 def resolve_device(requested: str):
     torch = import_torch()
     if requested not in {"auto", "cuda", "cpu"}:
@@ -95,7 +101,12 @@ def resolve_device(requested: str):
     if requested == "cuda" and not torch.cuda.is_available():
         raise DeviceError("CUDA was requested but is unavailable.")
     if requested == "auto":
-        requested = "cuda" if torch.cuda.is_available() else "cpu"
+        if torch.cuda.is_available():
+            requested = "cuda"
+        elif mps_available(torch):
+            requested = "mps"
+        else:
+            requested = "cpu"
     return torch.device(requested)
 
 
@@ -132,4 +143,3 @@ def load_tracknet(weight_value: str | Path, requested_device: str) -> LoadedTrac
 
 
 from .errors import WorkerError  # noqa: E402
-

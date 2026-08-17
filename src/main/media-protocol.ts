@@ -4,14 +4,19 @@ import { Readable } from 'node:stream';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { protocol } from 'electron';
+import { mediaContentTypeForPath, type VideoContentType } from './video-format';
 
-type RegisteredMedia = { filePath: string; contentType: 'video/mp4' | 'image/jpeg' };
+type MediaContentType = VideoContentType | 'image/jpeg';
+type RegisteredMedia = { filePath: string; contentType: MediaContentType };
 
 const registered = new Map<string, RegisteredMedia>();
 
-export function registerMediaPath(filePath: string, contentType: RegisteredMedia['contentType'] = 'video/mp4'): string {
+export function registerMediaPath(filePath: string, contentType?: MediaContentType): string {
   const token = randomUUID();
-  registered.set(token, { filePath: path.resolve(filePath), contentType });
+  registered.set(token, {
+    filePath: path.resolve(filePath),
+    contentType: contentType ?? mediaContentTypeForPath(filePath),
+  });
   return `ttcut-media://media/${token}`;
 }
 

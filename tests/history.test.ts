@@ -28,7 +28,11 @@ const calibration: Calibration = {
   },
 };
 
-function analysis(videoPath: string, rallyCount = 1): AnalysisResultV1 {
+function analysis(
+  videoPath: string,
+  rallyCount = 1,
+  container: AnalysisResultV1['video']['container'] = 'mp4',
+): AnalysisResultV1 {
   return {
     schema_version: 1,
     video: {
@@ -40,7 +44,7 @@ function analysis(videoPath: string, rallyCount = 1): AnalysisResultV1 {
       variable_frame_rate: false,
       video_codec: 'h264',
       audio_codec: 'aac',
-      container: 'mp4',
+      container,
     },
     rallies: Array.from({ length: rallyCount }, (_, index) => ({
       id: `rally_${String(index + 1).padStart(3, '0')}`,
@@ -82,6 +86,29 @@ describe('analysis history', () => {
     expect(entries[0]?.record.analysis.rallies).toHaveLength(2);
     expect(entries[0]?.sourceStatus).toBe('available');
     await expect(readFile(entries[0]!.coverPath!, 'utf8')).resolves.toBe('jpeg-cover');
+  });
+
+  it('preserves a MOV source and metadata when saving, listing, and reopening history', async () => {
+    const root = await temporaryDirectory();
+    const source = path.join(root, '比赛视频.MOV');
+    await writeFile(source, 'source-video', 'utf8');
+    const store = new HistoryStore(path.join(root, 'history'), async (_input, output) => {
+      await writeFile(output, 'jpeg-cover', 'utf8');
+    });
+
+    const saved = await store.upsert(analysis(source, 1, 'mov'), calibration);
+    expect(saved?.source.name).toBe('比赛视频.MOV');
+    expect(saved?.analysis.video.container).toBe('mov');
+
+    const entries = await store.list();
+    expect(entries).toHaveLength(1);
+    expect(entries[0]?.record.source.name).toBe('比赛视频.MOV');
+    expect(entries[0]?.record.analysis.video.container).toBe('mov');
+
+    const reopened = await store.open(saved!.id);
+    expect(reopened.source.path).toBe(source);
+    expect(reopened.source.name).toBe('比赛视频.MOV');
+    expect(reopened.analysis.video.container).toBe('mov');
   });
 
   it('treats a changed file fingerprint as a new source and disables the stale entry', async () => {

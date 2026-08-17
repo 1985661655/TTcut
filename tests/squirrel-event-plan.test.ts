@@ -4,7 +4,7 @@ import { squirrelEventPlan } from '../src/main/squirrel-event-plan';
 
 describe('Squirrel startup lifecycle', () => {
   const executable = 'C:\\Users\\tester\\AppData\\Local\\TTcut\\app-1.0.0\\TTcut.exe';
-  const updateExecutable = path.resolve(path.dirname(executable), '..', 'Update.exe');
+  const updateExecutable = path.win32.resolve(path.win32.dirname(executable), '..', 'Update.exe');
 
   it.each(['--squirrel-install', '--squirrel-updated'])('creates the installed shortcut for %s', (event) => {
     expect(squirrelEventPlan('win32', event, executable)).toEqual({

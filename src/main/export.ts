@@ -1,4 +1,4 @@
-import { access, open, rename, rm, stat, statfs } from 'node:fs/promises';
+import { open, rm, stat, statfs } from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { BrowserWindow } from 'electron';
@@ -16,33 +16,12 @@ import {
   expectedOutputDuration,
 } from './media-plan';
 import { registerMediaPath } from './media-protocol';
+import { chooseOutputPath, publishOutput } from './output-path';
 import { probeAudioPacketBoundaries, probeKeyframes, probeVideo } from './probe';
 import { hasActiveTasks, spawnTracked } from './processes';
 
 function send(window: BrowserWindow, event: AppEvent): void {
   if (!window.isDestroyed()) window.webContents.send(IPC.taskEvent, event);
-}
-
-async function available(filePath: string): Promise<boolean> {
-  try {
-    await access(filePath);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-async function chooseOutput(input: string): Promise<string> {
-  const directory = path.dirname(input);
-  const extension = path.extname(input);
-  const base = path.basename(input, extension);
-  let suffix = 1;
-  while (true) {
-    const name = suffix === 1 ? `${base}_ttcut${extension}` : `${base}_ttcut_${suffix}${extension}`;
-    const candidate = path.join(directory, name);
-    if (!(await available(candidate))) return candidate;
-    suffix += 1;
-  }
 }
 
 async function assertExportPreconditions(
@@ -205,7 +184,7 @@ export async function startExport(window: BrowserWindow, rawSelection: CutSelect
   if (!components.ffmpeg || !components.ffprobe) throw new Error('MEDIA_COMPONENT_MISSING');
   await validateMediaComponent(components.ffmpeg, components.ffprobe);
   const taskId = randomUUID();
-  const output = await chooseOutput(analysis.video.path);
+  const output = await chooseOutputPath(analysis.video.path);
   const partial = path.join(path.dirname(output), `.${path.basename(output, '.mp4')}.${taskId}.partial.mp4`);
   const duration = expectedOutputDuration(groups);
   send(window, { type: 'progress', data: { taskId, kind: 'export', stage: 'preparing', percent: 0 } });
@@ -248,8 +227,7 @@ export async function startExport(window: BrowserWindow, rawSelection: CutSelect
       );
       await validateExportOutput(partial, duration, analysis.video);
     }
-    if (await available(output)) throw new Error('OUTPUT_COLLISION');
-    await rename(partial, output);
+    await publishOutput(partial, output);
     const result = {
       taskId,
       outputPath: output,
